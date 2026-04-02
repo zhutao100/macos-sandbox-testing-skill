@@ -3,7 +3,7 @@
 
 This uninstalls:
 - The Swift anchor file from selected executable/test targets
-- The bootstrap C target under `Sources/SwiftPMSandboxTestingBootstrap`
+- The bootstrap C target under `Sources/<SwiftPMSandboxTestingBootstrap*>`
 - The `Package.swift` wiring (target declaration + dependencies)
 """
 
@@ -17,12 +17,42 @@ from pathlib import Path
 
 from install import (
     _ANCHOR_SWIFT_NAME,
-    _BOOTSTRAP_REL_DIR,
-    _BOOTSTRAP_TARGET_NAME,
+    _BOOTSTRAP_C_NAME,
+    _BOOTSTRAP_H_NAME,
+    _BOOTSTRAP_MARKER_NAME,
     _MANIFEST_BLOCK_BEGIN,
     _MANIFEST_BLOCK_END,
     enumerate_targets,
 )
+
+
+def _discover_bootstrap_target_decls(manifest: str) -> list[tuple[str, Path]]:
+    """Return list of (target_name, target_rel_path)."""
+    blocks = re.findall(
+        rf"^[ \t]*{re.escape(_MANIFEST_BLOCK_BEGIN)}\n.*?^[ \t]*{re.escape(_MANIFEST_BLOCK_END)}\n",
+        manifest,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    out: list[tuple[str, Path]] = []
+    for b in blocks:
+        m_name = re.search(r'\bname\s*:\s*"([^"]+)"', b)
+        if not m_name:
+            continue
+        name = m_name.group(1)
+        m_path = re.search(r'\bpath\s*:\s*"([^"]+)"', b)
+        rel_path = Path(m_path.group(1)) if m_path else (Path("Sources") / name)
+        out.append((name, rel_path))
+    return out
+
+
+def _looks_like_installed_bootstrap_dir(dir_path: Path) -> bool:
+    if (dir_path / _BOOTSTRAP_MARKER_NAME).exists():
+        return True
+    if not (dir_path / _BOOTSTRAP_C_NAME).exists():
+        return False
+    if not (dir_path / "include" / _BOOTSTRAP_H_NAME).exists():
+        return False
+    return True
 
 
 def _skip_swift_string(src: str, i: int) -> int:
@@ -80,8 +110,8 @@ def _extract_target_name(call_text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _remove_bootstrap_from_dependencies(call_text: str) -> tuple[str, bool]:
-    if f"\"{_BOOTSTRAP_TARGET_NAME}\"" not in call_text:
+def _remove_bootstrap_from_dependencies(call_text: str, *, bootstrap_target_names: set[str]) -> tuple[str, bool]:
+    if not any(f"\"{n}\"" in call_text for n in bootstrap_target_names):
         return call_text, False
 
     m = re.search(r"\bdependencies\s*:\s*\[", call_text)
@@ -94,27 +124,34 @@ def _remove_bootstrap_from_dependencies(call_text: str) -> tuple[str, bool]:
 
     if "\n" in content:
         lines = content.splitlines(keepends=True)
-        new_lines = [ln for ln in lines if f"\"{_BOOTSTRAP_TARGET_NAME}\"" not in ln]
+        new_lines = [
+            ln
+            for ln in lines
+            if "swiftpm-sandbox-testing" not in ln and not any(f"\"{n}\"" in ln for n in bootstrap_target_names)
+        ]
         new_content = "".join(new_lines)
         return call_text[: open_idx + 1] + new_content + call_text[close_idx:], True
 
-    # One-line array: remove at-start insertion (and fall back to generic cleanup).
+    # One-line array: remove marker and the bootstrap dependency entry.
     trimmed = content.strip()
-    trimmed = re.sub(
-        rf'^\s*"{re.escape(_BOOTSTRAP_TARGET_NAME)}"\s*,\s*/\*\s*swiftpm-sandbox-testing\s*\*/\s*',
-        "",
-        trimmed,
-    )
-    trimmed = trimmed.replace(f"\"{_BOOTSTRAP_TARGET_NAME}\"", "")
+    trimmed = re.sub(r"/\*\s*swiftpm-sandbox-testing\s*\*/", "", trimmed)
+    for name in bootstrap_target_names:
+        trimmed = trimmed.replace(f"\"{name}\"", "")
     trimmed = re.sub(r",\s*,", ",", trimmed)
     trimmed = trimmed.strip(" ,")
     new_content = f" {trimmed} " if trimmed else ""
     return call_text[: open_idx + 1] + new_content + call_text[close_idx:], True
 
 
-def _patch_manifest_remove_bootstrap(manifest: str, *, target_names: set[str]) -> tuple[str, int, bool]:
+def _patch_manifest_remove_bootstrap(
+    manifest: str,
+    *,
+    target_names: set[str],
+    bootstrap_target_names: set[str],
+    remove_target_block: bool,
+) -> tuple[str, int, bool]:
     removed_target_block = False
-    if _MANIFEST_BLOCK_BEGIN in manifest and _MANIFEST_BLOCK_END in manifest:
+    if remove_target_block and _MANIFEST_BLOCK_BEGIN in manifest and _MANIFEST_BLOCK_END in manifest:
         manifest, n = re.subn(
             rf"^[ \t]*{re.escape(_MANIFEST_BLOCK_BEGIN)}\n.*?^[ \t]*{re.escape(_MANIFEST_BLOCK_END)}\n",
             "",
@@ -131,9 +168,9 @@ def _patch_manifest_remove_bootstrap(manifest: str, *, target_names: set[str]) -
         name = _extract_target_name(call_text)
         if not name or name not in target_names:
             continue
-        if name == _BOOTSTRAP_TARGET_NAME:
+        if name in bootstrap_target_names:
             continue
-        new_call, changed = _remove_bootstrap_from_dependencies(call_text)
+        new_call, changed = _remove_bootstrap_from_dependencies(call_text, bootstrap_target_names=bootstrap_target_names)
         if changed:
             replacements.append((start, end, new_call))
 
@@ -160,26 +197,49 @@ def main() -> None:
         print(f"ERROR: Package.swift not found under {package_root}", file=sys.stderr)
         sys.exit(2)
 
+    manifest_path = package_root / "Package.swift"
+    manifest = manifest_path.read_text(encoding="utf-8", errors="replace")
+    bootstrap_decls = _discover_bootstrap_target_decls(manifest)
+    bootstrap_target_names = {n for n, _ in bootstrap_decls}
+    remove_target_block = args.only == "all"
+
     targets = enumerate_targets(package_root)
     if args.only != "all":
         targets = [t for t in targets if t.kind == args.only]
     removed = 0
 
     for t in targets:
-        dst = t.path / _ANCHOR_SWIFT_NAME
-        if not dst.exists():
-            print(f"SKIP {t.kind} {t.name}: anchor not installed")
-            continue
-        if args.dry_run:
-            print(f"DRYRUN {t.kind} {t.name}: would remove {dst}")
-            continue
-        dst.unlink()
-        removed += 1
-        print(f"OK {t.kind} {t.name}: removed {dst}")
+        for rel in (
+            _ANCHOR_SWIFT_NAME,
+            _BOOTSTRAP_C_NAME, # legacy mixed-language install
+        ):
+            dst = t.path / rel
+            if not dst.exists():
+                continue
+            if args.dry_run:
+                print(f"DRYRUN {t.kind} {t.name}: would remove {dst}")
+                continue
+            dst.unlink()
+            removed += 1
+            print(f"OK {t.kind} {t.name}: removed {dst}")
 
     # Remove bootstrap target directory.
-    bootstrap_dir = package_root / _BOOTSTRAP_REL_DIR
-    if bootstrap_dir.exists():
+    for name, rel_path in bootstrap_decls:
+        if not remove_target_block:
+            continue
+        if rel_path.is_absolute():
+            print(f"SKIP bootstrap {name}: absolute path in Package.swift markers: {rel_path}", file=sys.stderr)
+            continue
+        bootstrap_dir = (package_root / rel_path).resolve()
+        if not bootstrap_dir.exists():
+            continue
+        if package_root not in bootstrap_dir.parents:
+            print(f"SKIP bootstrap {name}: path escapes package root: {bootstrap_dir}", file=sys.stderr)
+            continue
+        if not _looks_like_installed_bootstrap_dir(bootstrap_dir):
+            print(f"SKIP bootstrap {name}: does not look like an installed bootstrap dir: {bootstrap_dir}", file=sys.stderr)
+            continue
+
         if args.dry_run:
             print(f"DRYRUN: would remove {bootstrap_dir}")
         else:
@@ -187,10 +247,11 @@ def main() -> None:
             print(f"OK: removed {bootstrap_dir}")
 
     # Patch Package.swift.
-    manifest_path = package_root / "Package.swift"
-    manifest = manifest_path.read_text(encoding="utf-8")
     manifest, dep_patches, removed_target_block = _patch_manifest_remove_bootstrap(
-        manifest, target_names={t.name for t in targets}
+        manifest,
+        target_names={t.name for t in targets},
+        bootstrap_target_names=bootstrap_target_names,
+        remove_target_block=remove_target_block,
     )
 
     if args.dry_run:
