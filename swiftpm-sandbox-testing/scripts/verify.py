@@ -40,6 +40,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Verify swiftpm-sandbox-testing is active")
     ap.add_argument("--package-root", required=True, type=Path)
     ap.add_argument("--configuration", choices=["debug", "release"], default="debug")
+    ap.add_argument(
+        "--allow-test-failure",
+        action="store_true",
+        help="Do not fail verification if `swift test` exits non-zero; still require sandbox artifacts to exist.",
+    )
     args = ap.parse_args()
 
     package_root: Path = args.package_root.resolve()
@@ -67,10 +72,16 @@ def main() -> None:
     proc = _run(cmd, cwd=package_root, env=env)
 
     print(proc.stdout)
-    if proc.returncode != 0:
+    test_failed = proc.returncode != 0
+    if test_failed:
         print(proc.stderr, file=sys.stderr)
-        print(f"ERROR: swift test failed with exit code {proc.returncode}", file=sys.stderr)
-        sys.exit(proc.returncode)
+        if not args.allow_test_failure:
+            print(f"ERROR: swift test failed with exit code {proc.returncode}", file=sys.stderr)
+            sys.exit(proc.returncode)
+        print(
+            f"WARN: swift test failed with exit code {proc.returncode}; continuing to verify sandbox artifacts.",
+            file=sys.stderr,
+        )
 
     # Locate sandbox root.
     sandbox_parent = package_root / ".build" / "swiftpm-sandbox-testing"
@@ -92,6 +103,8 @@ def main() -> None:
 
     print(f"OK: sandbox root: {latest}")
     print(f"OK: events log: {events}")
+    if test_failed:
+        print(f"WARN: swift test exited non-zero ({proc.returncode}), but sandbox appears active.", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -94,6 +94,12 @@ static bool swiftpmst_verbose(void) {
 
 static bool swiftpmst_allow_system_tmp(void) {
     const char *s = getenv("SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP");
+    if (!s || !*s) return true;
+    return strcmp(s, "0") != 0;
+}
+
+static bool swiftpmst_preserve_home(void) {
+    const char *s = getenv("SWIFTPM_SANDBOX_PRESERVE_HOME");
     return (s && *s && strcmp(s, "0") != 0);
 }
 
@@ -125,6 +131,12 @@ static _Thread_local int g_in_hook = 0;
 // Real function pointers (resolved with dlsym(RTLD_NEXT, ...))
 static int (*real_open)(const char *path, int oflag, ...) = NULL;
 static int (*real_openat)(int fd, const char *path, int oflag, ...) = NULL;
+static int (*real_open_nocancel)(const char *path, int oflag, ...) = NULL;
+static int (*real_openat_nocancel)(int fd, const char *path, int oflag, ...) = NULL;
+static int (*real_dunder_open)(const char *path, int oflag, ...) = NULL;
+static int (*real_dunder_openat)(int fd, const char *path, int oflag, ...) = NULL;
+static int (*real_dunder_open_nocancel)(const char *path, int oflag, ...) = NULL;
+static int (*real_dunder_openat_nocancel)(int fd, const char *path, int oflag, ...) = NULL;
 static int (*real_creat)(const char *path, mode_t mode) = NULL;
 static int (*real_unlink)(const char *path) = NULL;
 static int (*real_rename)(const char *old, const char *newp) = NULL;
@@ -137,6 +149,18 @@ static void swiftpmst_resolve_real_functions(void) {
     if (real_open) return;
     real_open = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
     real_openat = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "openat");
+    real_open_nocancel = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open$NOCANCEL");
+    real_openat_nocancel = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "openat$NOCANCEL");
+    if (!real_open_nocancel) real_open_nocancel = real_open;
+    if (!real_openat_nocancel) real_openat_nocancel = real_openat;
+    real_dunder_open = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "__open");
+    real_dunder_openat = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "__openat");
+    real_dunder_open_nocancel = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "__open_nocancel");
+    real_dunder_openat_nocancel = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "__openat_nocancel");
+    if (!real_dunder_open) real_dunder_open = real_open;
+    if (!real_dunder_openat) real_dunder_openat = real_openat;
+    if (!real_dunder_open_nocancel) real_dunder_open_nocancel = real_open_nocancel;
+    if (!real_dunder_openat_nocancel) real_dunder_openat_nocancel = real_openat_nocancel;
     real_creat = (int (*)(const char *, mode_t))dlsym(RTLD_NEXT, "creat");
     real_unlink = (int (*)(const char *))dlsym(RTLD_NEXT, "unlink");
     real_rename = (int (*)(const char *, const char *))dlsym(RTLD_NEXT, "rename");
@@ -557,21 +581,31 @@ static bool swiftpmst_make_redirect_path(const char *orig_abs, char out[PATH_MAX
 }
 
 // -----------------------------
-// Interposed functions// -----------------------------
 // Interposed functions
 // -----------------------------
 
-static int swiftpmst_open_impl(const char *path, int oflag, mode_t mode, bool has_mode) {
+typedef int (*swiftpmst_open_fn_t)(const char *path, int oflag, ...);
+typedef int (*swiftpmst_openat_fn_t)(int fd, const char *path, int oflag, ...);
+
+static int swiftpmst_open_impl_with(
+    const char *op,
+    swiftpmst_open_fn_t real_fn,
+    const char *path,
+    int oflag,
+    mode_t mode,
+    bool has_mode
+) {
     swiftpmst_resolve_real_functions();
+    if (!real_fn) real_fn = real_open;
 
     if (g_in_hook) {
-        if (has_mode) return real_open(path, oflag, mode);
-        return real_open(path, oflag);
+        if (has_mode) return real_fn(path, oflag, mode);
+        return real_fn(path, oflag);
     }
 
     if (!g_tripwire_active || !g_tripwire_enabled) {
-        if (has_mode) return real_open(path, oflag, mode);
-        return real_open(path, oflag);
+        if (has_mode) return real_fn(path, oflag, mode);
+        return real_fn(path, oflag);
     }
 
     g_in_hook = 1;
@@ -581,7 +615,7 @@ static int swiftpmst_open_impl(const char *path, int oflag, mode_t mode, bool ha
     bool abs_ok = swiftpmst_make_abs_path(path, abs);
 
     if (is_write && abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("open", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+        swiftpmst_log_json_event(op, abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
 
         if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
             // Fall through.
@@ -589,8 +623,8 @@ static int swiftpmst_open_impl(const char *path, int oflag, mode_t mode, bool ha
             char redir[PATH_MAX];
             if (swiftpmst_make_redirect_path(abs, redir)) {
                 int r;
-                if (has_mode) r = real_open(redir, oflag, mode);
-                else r = real_open(redir, oflag);
+                if (has_mode) r = real_fn(redir, oflag, mode);
+                else r = real_fn(redir, oflag);
                 g_in_hook = 0;
                 return r;
             }
@@ -601,13 +635,73 @@ static int swiftpmst_open_impl(const char *path, int oflag, mode_t mode, bool ha
         }
 
         if (swiftpmst_verbose()) {
-            fprintf(stderr, "[swiftpm-sandbox-testing] deny open(write): %s\n", abs);
+            fprintf(stderr, "[swiftpm-sandbox-testing] deny %s(write): %s\n", op ? op : "open", abs);
         }
     }
 
     int r;
-    if (has_mode) r = real_open(path, oflag, mode);
-    else r = real_open(path, oflag);
+    if (has_mode) r = real_fn(path, oflag, mode);
+    else r = real_fn(path, oflag);
+
+    g_in_hook = 0;
+    return r;
+}
+
+static int swiftpmst_openat_impl_with(
+    const char *op,
+    swiftpmst_openat_fn_t real_fn,
+    int fd,
+    const char *path,
+    int oflag,
+    mode_t mode,
+    bool has_mode
+) {
+    swiftpmst_resolve_real_functions();
+    if (!real_fn) real_fn = real_openat;
+
+    if (g_in_hook) {
+        if (has_mode) return real_fn(fd, path, oflag, mode);
+        return real_fn(fd, path, oflag);
+    }
+
+    if (!g_tripwire_active || !g_tripwire_enabled) {
+        if (has_mode) return real_fn(fd, path, oflag, mode);
+        return real_fn(fd, path, oflag);
+    }
+
+    g_in_hook = 1;
+
+    const bool is_write = swiftpmst_is_write_open_flags(oflag);
+    // Best-effort resolution: if relative, treat as cwd-relative (dirfd-specific resolution is complex).
+    char abs[PATH_MAX];
+    bool abs_ok = swiftpmst_make_abs_path(path, abs);
+
+    if (is_write && abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
+        swiftpmst_log_json_event(op, abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+
+        if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            char redir[PATH_MAX];
+            if (swiftpmst_make_redirect_path(abs, redir)) {
+                int r;
+                if (has_mode) r = real_fn(fd, redir, oflag, mode);
+                else r = real_fn(fd, redir, oflag);
+                g_in_hook = 0;
+                return r;
+            }
+        } else if (g_mode == SWIFTPMST_MODE_STRICT) {
+            errno = EPERM;
+            g_in_hook = 0;
+            return -1;
+        }
+
+        if (swiftpmst_verbose()) {
+            fprintf(stderr, "[swiftpm-sandbox-testing] deny %s(write): %s\n", op ? op : "openat", abs);
+        }
+    }
+
+    int r;
+    if (has_mode) r = real_fn(fd, path, oflag, mode);
+    else r = real_fn(fd, path, oflag);
 
     g_in_hook = 0;
     return r;
@@ -623,12 +717,10 @@ int swiftpmst_open(const char *path, int oflag, ...) {
         va_end(ap);
         has_mode = true;
     }
-    return swiftpmst_open_impl(path, oflag, mode, has_mode);
+    return swiftpmst_open_impl_with("open", real_open, path, oflag, mode, has_mode);
 }
 
-int swiftpmst_openat(int fd, const char *path, int oflag, ...) {
-    swiftpmst_resolve_real_functions();
-
+int swiftpmst_open_nocancel(const char *path, int oflag, ...) {
     mode_t mode = 0;
     bool has_mode = false;
     if (oflag & O_CREAT) {
@@ -638,53 +730,93 @@ int swiftpmst_openat(int fd, const char *path, int oflag, ...) {
         va_end(ap);
         has_mode = true;
     }
+    return swiftpmst_open_impl_with("open$NOCANCEL", real_open_nocancel, path, oflag, mode, has_mode);
+}
 
-    if (g_in_hook) {
-        if (has_mode) return real_openat(fd, path, oflag, mode);
-        return real_openat(fd, path, oflag);
+int swiftpmst_dunder_open(const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
     }
+    return swiftpmst_open_impl_with("__open", real_dunder_open, path, oflag, mode, has_mode);
+}
 
-    if (!g_tripwire_active || !g_tripwire_enabled) {
-        if (has_mode) return real_openat(fd, path, oflag, mode);
-        return real_openat(fd, path, oflag);
+int swiftpmst_dunder_open_nocancel(const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
     }
+    return swiftpmst_open_impl_with("__open_nocancel", real_dunder_open_nocancel, path, oflag, mode, has_mode);
+}
 
-    g_in_hook = 1;
-
-    const bool is_write = swiftpmst_is_write_open_flags(oflag);
-    // Best-effort resolution: if relative, treat as cwd-relative (dirfd-specific resolution is complex).
-    char abs[PATH_MAX];
-    bool abs_ok = swiftpmst_make_abs_path(path, abs);
-
-    if (is_write && abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("openat", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
-
-        if (g_mode == SWIFTPMST_MODE_REDIRECT) {
-            char redir[PATH_MAX];
-            if (swiftpmst_make_redirect_path(abs, redir)) {
-                int r;
-                if (has_mode) r = real_openat(fd, redir, oflag, mode);
-                else r = real_openat(fd, redir, oflag);
-                g_in_hook = 0;
-                return r;
-            }
-        } else if (g_mode == SWIFTPMST_MODE_STRICT) {
-            errno = EPERM;
-            g_in_hook = 0;
-            return -1;
-        }
-
-        if (swiftpmst_verbose()) {
-            fprintf(stderr, "[swiftpm-sandbox-testing] deny openat(write): %s\n", abs);
-        }
+int swiftpmst_openat(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
     }
+    return swiftpmst_openat_impl_with("openat", real_openat, fd, path, oflag, mode, has_mode);
+}
 
-    int r;
-    if (has_mode) r = real_openat(fd, path, oflag, mode);
-    else r = real_openat(fd, path, oflag);
+int swiftpmst_openat_nocancel(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
+    }
+    return swiftpmst_openat_impl_with("openat$NOCANCEL", real_openat_nocancel, fd, path, oflag, mode, has_mode);
+}
 
-    g_in_hook = 0;
-    return r;
+int swiftpmst_dunder_openat(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
+    }
+    return swiftpmst_openat_impl_with("__openat", real_dunder_openat, fd, path, oflag, mode, has_mode);
+}
+
+int swiftpmst_dunder_openat_nocancel(int fd, const char *path, int oflag, ...) {
+    mode_t mode = 0;
+    bool has_mode = false;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+        has_mode = true;
+    }
+    return swiftpmst_openat_impl_with(
+        "__openat_nocancel",
+        real_dunder_openat_nocancel,
+        fd,
+        path,
+        oflag,
+        mode,
+        has_mode
+    );
 }
 
 int swiftpmst_creat(const char *path, mode_t mode) {
@@ -730,8 +862,19 @@ int swiftpmst_unlink(const char *path) {
     bool abs_ok = swiftpmst_make_abs_path(path, abs);
 
     if (abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("unlink", abs, "deny", EPERM);
-        if (g_mode == SWIFTPMST_MODE_STRICT) {
+        swiftpmst_log_json_event("unlink", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+
+        if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
+            // Fall through.
+        } else if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            char redir[PATH_MAX];
+            if (swiftpmst_make_redirect_path(abs, redir)) {
+                int r = real_unlink(redir);
+                if (r != 0 && errno == ENOENT) r = 0;
+                g_in_hook = 0;
+                return r;
+            }
+        } else {
             errno = EPERM;
             g_in_hook = 0;
             return -1;
@@ -750,12 +893,43 @@ int swiftpmst_rename(const char *old, const char *newp) {
     if (!g_tripwire_active || !g_tripwire_enabled) return real_rename(old, newp);
     g_in_hook = 1;
 
-    char abs_new[PATH_MAX];
-    bool abs_ok = swiftpmst_make_abs_path(newp, abs_new);
+    char abs_old[PATH_MAX];
+    bool abs_old_ok = swiftpmst_make_abs_path(old, abs_old);
 
-    if (abs_ok && !swiftpmst_write_allowed_path_string(abs_new)) {
-        swiftpmst_log_json_event("rename", abs_new, "deny", EPERM);
-        if (g_mode == SWIFTPMST_MODE_STRICT) {
+    char abs_new[PATH_MAX];
+    bool abs_new_ok = swiftpmst_make_abs_path(newp, abs_new);
+
+    const bool old_oob = abs_old_ok && !swiftpmst_write_allowed_path_string(abs_old);
+    const bool new_oob = abs_new_ok && !swiftpmst_write_allowed_path_string(abs_new);
+
+    if (old_oob || new_oob) {
+        swiftpmst_log_json_event(
+            "rename",
+            abs_new_ok ? abs_new : newp,
+            (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny",
+            EPERM
+        );
+
+        if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
+            // Fall through.
+        } else if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            const char *old_arg = old;
+            const char *new_arg = newp;
+
+            char redir_old[PATH_MAX];
+            char redir_new[PATH_MAX];
+
+            if (old_oob && abs_old_ok && swiftpmst_make_redirect_path(abs_old, redir_old)) {
+                old_arg = redir_old;
+            }
+            if (new_oob && abs_new_ok && swiftpmst_make_redirect_path(abs_new, redir_new)) {
+                new_arg = redir_new;
+            }
+
+            int r = real_rename(old_arg, new_arg);
+            g_in_hook = 0;
+            return r;
+        } else {
             errno = EPERM;
             g_in_hook = 0;
             return -1;
@@ -778,8 +952,18 @@ int swiftpmst_mkdir(const char *path, mode_t mode) {
     bool abs_ok = swiftpmst_make_abs_path(path, abs);
 
     if (abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("mkdir", abs, "deny", EPERM);
-        if (g_mode == SWIFTPMST_MODE_STRICT) {
+        swiftpmst_log_json_event("mkdir", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+
+        if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
+            // Fall through.
+        } else if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            char redir[PATH_MAX];
+            if (swiftpmst_make_redirect_path(abs, redir)) {
+                int r = real_mkdir(redir, mode);
+                g_in_hook = 0;
+                return r;
+            }
+        } else {
             errno = EPERM;
             g_in_hook = 0;
             return -1;
@@ -802,8 +986,19 @@ int swiftpmst_rmdir(const char *path) {
     bool abs_ok = swiftpmst_make_abs_path(path, abs);
 
     if (abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("rmdir", abs, "deny", EPERM);
-        if (g_mode == SWIFTPMST_MODE_STRICT) {
+        swiftpmst_log_json_event("rmdir", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+
+        if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
+            // Fall through.
+        } else if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            char redir[PATH_MAX];
+            if (swiftpmst_make_redirect_path(abs, redir)) {
+                int r = real_rmdir(redir);
+                if (r != 0 && errno == ENOENT) r = 0;
+                g_in_hook = 0;
+                return r;
+            }
+        } else {
             errno = EPERM;
             g_in_hook = 0;
             return -1;
@@ -826,8 +1021,18 @@ int swiftpmst_truncate(const char *path, off_t length) {
     bool abs_ok = swiftpmst_make_abs_path(path, abs);
 
     if (abs_ok && !swiftpmst_write_allowed_path_string(abs)) {
-        swiftpmst_log_json_event("truncate", abs, "deny", EPERM);
-        if (g_mode == SWIFTPMST_MODE_STRICT) {
+        swiftpmst_log_json_event("truncate", abs, (g_mode == SWIFTPMST_MODE_REDIRECT) ? "redirect" : "deny", EPERM);
+
+        if (g_mode == SWIFTPMST_MODE_REPORT_ONLY) {
+            // Fall through.
+        } else if (g_mode == SWIFTPMST_MODE_REDIRECT) {
+            char redir[PATH_MAX];
+            if (swiftpmst_make_redirect_path(abs, redir)) {
+                int r = real_truncate(redir, length);
+                g_in_hook = 0;
+                return r;
+            }
+        } else {
             errno = EPERM;
             g_in_hook = 0;
             return -1;
@@ -861,6 +1066,21 @@ struct swiftpmst_interpose {
     const void *replacee;
 };
 
+// Some Darwin libc/kernel entrypoints use `$` in the symbol name (e.g. `_open$NOCANCEL`).
+// C identifiers cannot contain `$`, so we declare replacee aliases with an asm label.
+extern int swiftpmst_replacee_open_nocancel(const char *path, int oflag, ...)
+    __attribute__((weak_import))
+    __asm__("_open$NOCANCEL");
+extern int swiftpmst_replacee_openat_nocancel(int fd, const char *path, int oflag, ...)
+    __attribute__((weak_import))
+    __asm__("_openat$NOCANCEL");
+
+// libsystem_kernel also exports underscored syscall wrappers (e.g. `__open_nocancel`).
+extern int __open(const char *path, int oflag, ...);
+extern int __open_nocancel(const char *path, int oflag, ...);
+extern int __openat(int fd, const char *path, int oflag, ...);
+extern int __openat_nocancel(int fd, const char *path, int oflag, ...);
+
 #define SWIFTPMST_INTERPOSE(_replacement, _replacee) \
     __attribute__((used)) static const struct swiftpmst_interpose swiftpmst_interpose_##_replacee \
         __attribute__((section("__DATA,__interpose"))) = { \
@@ -870,6 +1090,12 @@ struct swiftpmst_interpose {
 
 SWIFTPMST_INTERPOSE(swiftpmst_open, open)
 SWIFTPMST_INTERPOSE(swiftpmst_openat, openat)
+SWIFTPMST_INTERPOSE(swiftpmst_open_nocancel, swiftpmst_replacee_open_nocancel)
+SWIFTPMST_INTERPOSE(swiftpmst_openat_nocancel, swiftpmst_replacee_openat_nocancel)
+SWIFTPMST_INTERPOSE(swiftpmst_dunder_open, __open)
+SWIFTPMST_INTERPOSE(swiftpmst_dunder_open_nocancel, __open_nocancel)
+SWIFTPMST_INTERPOSE(swiftpmst_dunder_openat, __openat)
+SWIFTPMST_INTERPOSE(swiftpmst_dunder_openat_nocancel, __openat_nocancel)
 SWIFTPMST_INTERPOSE(swiftpmst_creat, creat)
 SWIFTPMST_INTERPOSE(swiftpmst_unlink, unlink)
 SWIFTPMST_INTERPOSE(swiftpmst_rename, rename)
@@ -926,8 +1152,10 @@ static void swiftpmst_bootstrap(void) {
     }
 
     // Redirect home and temp.
-    setenv("HOME", g_fake_home, 1);
-    setenv("CFFIXED_USER_HOME", g_fake_home, 1);
+    if (!swiftpmst_preserve_home()) {
+        setenv("HOME", g_fake_home, 1);
+        setenv("CFFIXED_USER_HOME", g_fake_home, 1);
+    }
     setenv("TMPDIR", g_fake_tmp, 1);
 
     if (swiftpmst_verbose()) {
@@ -935,7 +1163,7 @@ static void swiftpmst_bootstrap(void) {
         fprintf(stderr, "[swiftpm-sandbox-testing] sandbox=%s\n", g_sandbox_root);
     }
 
-        // Activate tripwire enforcement for subsequent filesystem mutations.
+    // Activate tripwire enforcement for subsequent filesystem mutations.
     g_tripwire_active = true;
 
     // Apply Seatbelt sandbox (kernel write-guard).

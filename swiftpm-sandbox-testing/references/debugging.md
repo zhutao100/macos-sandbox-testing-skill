@@ -25,6 +25,11 @@ Each run produces:
 
 `events.jsonl` contains one JSON object per logged event (bootstrap marker plus any intercepted mutations).
 
+Notes:
+
+- The tripwire logger records **out-of-bounds** mutation attempts (and always emits a `bootstrap` marker). If your run never attempts an out-of-bounds write, the log may contain only the `bootstrap` event.
+- Seatbelt applies to child processes, but the tripwire logger is **in-process**: helper binaries (e.g. SwiftPM’s `swiftpm-xctest-helper`) will not emit `events.jsonl` unless they also include the injected bootstrap code.
+
 ## 3) If `swift test` fails early
 
 A tight write-boundary can break framework behaviors. Typical symptoms:
@@ -44,11 +49,13 @@ Mitigations (in increasing order of looseness):
 SWIFTPM_SANDBOX_MODE=redirect swift test
 ```
 
-3. Allow common system temp locations (this weakens the “workspace-only writes” guarantee; use only if required):
+3. Allow common system temp locations (default; required for SwiftPM XCTest on macOS):
 
 ```bash
 SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=1 swift test
 ```
+
+If you need the strict “workspace-only writes” profile, set `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=0` (expect some `swift test` invocations to fail due to SwiftPM runner temp writes).
 
 4. If you are bringing up the sandbox and need the process to continue even if applying Seatbelt fails (not recommended), allow running unenforced:
 
@@ -105,7 +112,9 @@ The bootstrap fails closed by default (exit code 197) because continuing without
 First, ensure you are not running with the explicit escape hatches:
 
 - `SWIFTPM_SANDBOX_DISABLE=1`
-- `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=1`
+- `SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1`
+
+Note: `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP` defaults to `1` for SwiftPM XCTest compatibility; set it to `0` if you need the strict “workspace-only writes” profile.
 
 Then use self-test:
 

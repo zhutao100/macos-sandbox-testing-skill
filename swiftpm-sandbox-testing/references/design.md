@@ -56,6 +56,11 @@ The injected bootstrap uses dyld interposing (`__DATA,__interpose`) to observe c
 - dyld interposing overview + example: https://blog.darlinghq.org/2018/07/mach-o-linking-and-loading-tricks.html
 - macro used by several projects (same `__DATA,__interpose` technique): https://github.com/facebook/xctool/blob/master/Common/dyld-interposing.h
 
+Notes:
+
+- The tripwire logger is intentionally biased toward **attribution of out-of-bounds mutations** (deny/redirect) rather than logging every successful write.
+- Seatbelt enforcement applies to child processes, but dyld interposing is **per-process**. Child helpers (e.g. SwiftPM’s `swiftpm-xctest-helper`) inherit the kernel sandbox but will not emit tripwire logs unless they also include the injected bootstrap.
+
 ## Threat model and non-goals
 
 This design is intended to prevent **accidental destructive host mutations** during development/testing.
@@ -68,7 +73,9 @@ This skill uses a **blacklist-style** profile:
 
 - `(allow default)` so that reads and most system operations continue to work, then
 - a broad `(deny file-write*)`, and finally
-- an allowlist `(allow file-write* …)` for the repo workspace and the repo-local sandbox root (and optionally system temp locations if explicitly enabled)
+- an allowlist `(allow file-write* …)` for the repo workspace and the repo-local sandbox root
+
+By default, the allowlist also includes common system temp locations (notably `/var/folders/.../T`) because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file there as part of `swift test` on macOS. Set `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=0` to enable the strict “workspace-only writes” profile.
 
 Empirically, **rule ordering matters**. A common working pattern is “deny, then allow exceptions” (i.e., allow rules placed after broad denies). See this write-up with concrete `sandbox-exec` examples:
 

@@ -99,7 +99,7 @@ The injected bootstrap supports these environment variables:
 
 - `SWIFTPM_SANDBOX_MODE=strict|redirect|report-only` (default: `strict`)
   - `strict`: userland interposition denies out-of-bounds mutations immediately (`EPERM`) and logs.
-  - `redirect`: for selected operations (open/unlink/rename/mkdir/…), rewrite the target path into the sandbox root and proceed; still logs.
+  - `redirect`: for selected operations (open/openat/creat/unlink/rename/mkdir/rmdir/truncate), rewrite the target path into the sandbox root and proceed; still logs.
   - `report-only`: do not deny/redirect in userland; only log.
 
 **Important:** Seatbelt remains the primary enforcement mechanism in all modes (unless you disable the guard). `report-only` affects the *tripwire* only.
@@ -111,10 +111,16 @@ The injected bootstrap supports these environment variables:
 
 ### Optional compatibility loosening
 
-- `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=1`
+- `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=0|1` (default: `1`)
   - Allows write access to common system temp locations (e.g., `/tmp`, `/private/var/folders`).
-  - Default is **off** to preserve the “workspace-only writes” guarantee.
-  - Enable only if required for a specific dependency/framework.
+  - Default is **on** because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file under `/var/folders/.../T` as part of `swift test` execution on macOS.
+  - Set to `0` for the strict “workspace-only writes” profile (expect some `swift test` invocations to fail on macOS unless the toolchain’s temp behavior is also addressed).
+
+### Diagnostic knobs
+
+- `SWIFTPM_SANDBOX_PRESERVE_HOME=1`
+  - Do not redirect `HOME` / `CFFIXED_USER_HOME` into the sandbox root.
+  - Useful to surface which code paths would have written into the real home directory; typically pair with `SWIFTPM_SANDBOX_MODE=report-only` or `SWIFTPM_SANDBOX_MODE=redirect` so you can collect tripwire events without immediately returning `EPERM`.
 
 ### Logging & self-test
 
@@ -131,6 +137,8 @@ The injected bootstrap supports these environment variables:
 
 - Sandbox root: `<workspace>/.build/swiftpm-sandbox-testing/<run-id>/`
 - Logs: `<sandbox-root>/logs/events.jsonl`
+  - The log always includes a `bootstrap` marker; additional events appear when out-of-bounds mutations are attempted.
+  - Seatbelt applies to child processes, but the tripwire log is emitted only by processes that include the injected bootstrap code.
 
 ## References
 
