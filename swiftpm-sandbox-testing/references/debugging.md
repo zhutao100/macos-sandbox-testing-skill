@@ -2,10 +2,11 @@
 
 ## 1) Confirm the guard is installed
 
-In the target SwiftPM package:
+In the target SwiftPM package, a typical installation includes:
 
-- Each executable/test target directory should contain `SandboxTestingBootstrap.c`.
-- `swift test` should create `.build/swiftpm-sandbox-testing/<run-id>/…`.
+- `Sources/SwiftPMSandboxTestingRuntime/` (a C/Clang target)
+- `SandboxTestingBootstrap.swift` injected into each executable/test target’s source directory
+- `Package.swift` patched to wire the runtime target and, when needed, enable section-placement support
 
 If you used the bundled verifier:
 
@@ -36,7 +37,7 @@ Mitigations (in increasing order of looseness):
    - `SWIFTPM_SANDBOX_LOG_LEVEL=verbose`
    - and (optionally) `SWIFTPM_SANDBOX_SELFTEST=1`
 
-2. Use `redirect` mode so common mutation calls are rewritten into the repo-local sandbox root (still denied by Seatbelt if not rewritten):
+2. Use `redirect` mode so common mutation calls are rewritten into the repo-local sandbox root:
 
 ```bash
 SWIFTPM_SANDBOX_MODE=redirect swift test
@@ -96,7 +97,7 @@ This can happen if:
 - the profile fails to compile, or
 - Apple changes behavior around the deprecated APIs.
 
-The bootstrap fails closed by default (exit code 197) because continuing without a sandbox defeats the objective. Use `SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1` only during bring-up.
+The runtime fails closed by default (exit code 197) because continuing without a sandbox defeats the objective. Use `SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1` only during bring-up.
 
 ### B) “Writes still appear to succeed outside the workspace”
 
@@ -112,8 +113,3 @@ SWIFTPM_SANDBOX_SELFTEST=1 swift test
 ```
 
 Self-test uses `sandbox_check()` to validate sandbox presence and whether `file-write*` is allowed for the original HOME vs the sandbox root.
-
-Reference semantics:
-
-- Chromium `sandbox_check`: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
-- `sandbox_check` return values (`0 == allowed`): https://karol-mazurek.medium.com/sandbox-validator-e760e5d88617

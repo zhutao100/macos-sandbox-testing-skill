@@ -2,9 +2,9 @@
 name: swiftpm-sandbox-testing
 description: Use this skill when you need to add or verify an in-process sandbox/tripwire safety boundary for SwiftPM packages on macOS, so direct `swift run` and `swift test` cannot accidentally write outside the repo workspace. Installs a Seatbelt (`sandbox_init_with_parameters`) write guard plus optional filesystem-mutation logging into SwiftPM executable and test targets.
 license: MIT
-compatibility: macOS 15/26+ (Darwin). Requires SwiftPM (`swift`), Xcode Command Line Tools. Uses deprecated libsandbox Seatbelt APIs for dev/test safety; not intended as a shipped-product security guarantee.
+compatibility: macOS 15/26+ (Darwin). Requires SwiftPM (`swift`) and Xcode Command Line Tools. Uses deprecated Seatbelt APIs for dev/test safety; not intended as a shipped-product security guarantee.
 metadata:
-  version: "1.0"
+  version: "1.1"
   author: "swiftpm-sandbox-testing skill bundle"
   scope: "SwiftPM dev/test host-mutation prevention"
 ---
@@ -14,7 +14,7 @@ metadata:
 Ensure that **direct** invocations of:
 
 - `swift run` (development executable)
-- `swift test` (XCTest runner)
+- `swift test` (test runner)
 
 cannot **destructively mutate host-machine data outside the repo workspace**, without relying on external wrappers.
 
@@ -23,6 +23,16 @@ This skill installs a **self-bootstrapping guard** into SwiftPM targets:
 1. **Kernel-enforced write boundary** (Seatbelt sandbox via `sandbox_init_with_parameters`).
 2. **Tripwire logging** for common filesystem mutations (dyld interposing + backtrace), writing JSONL events into a repo-local sandbox directory.
 3. **Redirection of HOME/TMP** into `.build/…` to reduce accidental persistence in the real user home.
+
+## Key constraint (why install is not “just drop a .c file”)
+
+SwiftPM historically rejects targets that contain **both** Swift and C-family sources (C/C++/ObjC), producing:
+
+```
+contains mixed language source files; feature not supported
+```
+
+Therefore, this skill installs the guard using a **dedicated C runtime target** plus a **Swift bootstrap** per target (no mixed-language targets required).
 
 ## When to use
 
@@ -34,7 +44,7 @@ Do **not** use when:
 
 - the project is not SwiftPM-based,
 - the target environment is not macOS,
-- the user needs a **supported** App Sandbox / entitlements solution for shipping binaries (different workflow).
+- the user needs a supported App Sandbox / entitlements solution for shipping binaries (different workflow).
 
 ## Fast path
 
@@ -54,8 +64,20 @@ python3 <skill-path>/scripts/install.py --package-root <PATH_TO_SWIFTPM_PACKAGE>
 What it does:
 
 - Uses `swift package dump-package` to enumerate targets.
-- For each **executable** and **test** target, writes a `SandboxTestingBootstrap.c` source file into that target’s source directory.
-- The C file uses a constructor (`__attribute__((constructor))`) so it runs before Swift `main` / before XCTest begins executing tests.
+- Creates/updates a **Clang (C) target** at:
+  - `Sources/SwiftPMSandboxTestingRuntime/`
+- Patches `Package.swift` (best-effort, typical manifests) to:
+  - add the runtime target to the `targets: [...]` list,
+  - add `SwiftPMSandboxTestingRuntime` as a dependency of each **executable** and **test** target,
+  - enable section-placement support on older toolchains (`.enableExperimentalFeature("SymbolLinkageMarkers")`).
+- For each **executable** and **test** target, writes:
+  - `SandboxTestingBootstrap.swift`
+
+Bootstrap behavior:
+
+- On Swift **6.3+**, the bootstrap uses the stable `@section`/`@used` attributes (SE-0492) to place an initializer in `__DATA,__mod_init_func`.
+- On Swift **<= 6.2**, the bootstrap uses `@_section`/`@_used` gated behind `SymbolLinkageMarkers`.
+- The initializer calls the exported C entrypoint `swiftpmst_bootstrap()` before Swift `main` / before tests begin.
 
 ### 2) Verify that the boundary works (recommended)
 
@@ -80,7 +102,7 @@ This guard is intended to live in the repo so that:
 
 ## Configuration knobs (runtime)
 
-The injected bootstrap supports these environment variables:
+The runtime supports these environment variables:
 
 ### Hard switches
 
@@ -95,7 +117,7 @@ The injected bootstrap supports these environment variables:
 
 - `SWIFTPM_SANDBOX_MODE=strict|redirect|report-only` (default: `strict`)
   - `strict`: userland interposition denies out-of-bounds mutations immediately (`EPERM`) and logs.
-  - `redirect`: for selected operations (open/unlink/rename/mkdir/…), rewrite the target path into the sandbox root and proceed; still logs.
+  - `redirect`: for selected operations, rewrite the target path into the sandbox root and proceed; still logs.
   - `report-only`: do not deny/redirect in userland; only log.
 
 **Important:** Seatbelt remains the primary enforcement mechanism in all modes (unless you disable the guard). `report-only` affects the *tripwire* only.

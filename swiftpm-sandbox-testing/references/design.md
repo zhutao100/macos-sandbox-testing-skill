@@ -14,13 +14,44 @@ A wrapper is not reliable in agentic workflows: the safety boundary must activat
 
 ### 1) Apply the sandbox from inside the process
 
-The low-level macOS sandbox (“Seatbelt”, via the `sandbox(7)` APIs) cannot be attached to an already-running process. The process must apply the sandbox policy to itself, and (once applied) it cannot remove it; child processes can inherit the sandbox. See Mark Rowe’s overview:
+The low-level macOS sandbox (“Seatbelt”, via the `sandbox(7)` APIs) cannot be attached to an already-running process. The process must apply the sandbox policy to itself, and (once applied) it cannot remove it; child processes can inherit the sandbox.
+
+Reference overview:
 
 - https://bdash.net.nz/posts/sandboxing-on-macos/
 
 This fits the SwiftPM constraint: we compile the guard into targets so it runs for direct invocations.
 
-### 2) Use `sandbox_init_with_parameters` with a parameterized SBPL profile
+### 2) Avoid mixed-language targets in SwiftPM
+
+SwiftPM historically rejects targets that contain both Swift and C-family sources, so a “drop a .c file into every target” approach can fail with:
+
+```
+contains mixed language source files; feature not supported
+```
+
+Instead, the skill uses:
+
+- a dedicated **Clang (C) target** (`SwiftPMSandboxTestingRuntime`) that contains the Seatbelt + tripwire runtime, and
+- a tiny **Swift bootstrap** file injected into each executable/test target.
+
+The bootstrap calls an exported C entrypoint (`swiftpmst_bootstrap()`) and is arranged to run before Swift `main` / before tests.
+
+### 3) Run before `main` / before tests without wrappers
+
+On Darwin (Mach-O), “module initialization functions” run before `main` when referenced via the `__DATA,__mod_init_func` section.
+
+The skill’s Swift bootstrap uses section placement to register an initializer:
+
+- Swift 6.3+: stable `@section` and `@used` attributes (SE-0492)
+  - https://swift.org/blog/embedded-swift-improvements-coming-in-swift-6.3/
+  - https://forums.swift.org/t/se-0492-section-placement-control/82289
+- Swift 6.0–6.2: `@_section` / `@_used` behind the experimental `SymbolLinkageMarkers` feature
+  - https://stackoverflow.com/questions/31865872/is-there-a-swift-equivalent-to-gcc-attribute-constructor
+
+This arrangement keeps the package targets pure Swift, while still executing the C runtime early.
+
+### 4) Use `sandbox_init_with_parameters` with a parameterized SBPL profile
 
 Seatbelt policies are expressed in SBPL (a Scheme-like DSL). Parameters allow the policy to be configured at runtime (e.g., workspace root, sandbox root). Chromium maintains a production-quality macOS sandbox implementation that demonstrates:
 
@@ -32,29 +63,27 @@ Useful references:
 - Chromium `seatbelt.cc` (API usage and signatures): https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
 - Chromium “Mac Sandbox V2 Design Doc” (SBPL + parameter example): https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt_sandbox_design.md
 
-### 3) Redirect HOME and TMP into a repo-local honeypot
+### 5) Redirect HOME and TMP into a repo-local honeypot
 
 A large portion of accidental persistence comes from code that uses standard locations:
 
 - home-relative writes (`~/Library/...`) via `NSHomeDirectory()` / `FileManager` / Preferences
 - temporary file creation via `NSTemporaryDirectory()`
 
-CoreFoundation consults `CFFIXED_USER_HOME` (and falls back to `HOME`) when computing the “home directory” for APIs such as `CFCopyHomeDirectoryURL()` and higher-level Foundation equivalents. A readable source reference:
-
-- CoreFoundation `CFPlatform.c` (home directory selection logic): https://github.com/opensource-apple/CF/blob/master/CFPlatform.c
-
-The injected bootstrap sets `HOME`, `CFFIXED_USER_HOME`, and `TMPDIR` early, and creates a repo-local sandbox root under:
+The injected runtime sets `HOME`, `CFFIXED_USER_HOME`, and `TMPDIR` early, and creates a repo-local sandbox root under:
 
 - `<workspace>/.build/swiftpm-sandbox-testing/<run-id>/`
 
-### 4) Add a tripwire logger for actionable attribution
+### 6) Add a tripwire logger for actionable attribution
 
 Seatbelt violations typically fail with `EPERM` and may also be logged by the OS. A repo-local log is often more actionable for developer workflows (it’s co-located with the build artifacts and can include a backtrace).
 
-The injected bootstrap uses dyld interposing (`__DATA,__interpose`) to observe common filesystem mutation APIs (open-for-write, rename, unlink, mkdir, …) and writes JSONL events. Background references:
+The runtime uses dyld interposing (`__DATA,__interpose`) to observe common filesystem mutation APIs (open-for-write, rename, unlink, mkdir, …) and writes JSONL events.
+
+References:
 
 - dyld interposing overview + example: https://blog.darlinghq.org/2018/07/mach-o-linking-and-loading-tricks.html
-- macro used by several projects (same `__DATA,__interpose` technique): https://github.com/facebook/xctool/blob/master/Common/dyld-interposing.h
+- interpose macro used by projects (same `__DATA,__interpose` technique): https://github.com/facebook/xctool/blob/master/Common/dyld-interposing.h
 
 ## Threat model and non-goals
 
@@ -74,11 +103,11 @@ Empirically, **rule ordering matters**. A common working pattern is “deny, the
 
 - https://7402.org/blog/2020/macos-sandboxing-of-folder.html
 
-(Apple’s original “Sandbox Guide” PDFs also describe `(allow default)` vs `(deny default)` modes, but are historical and not macOS-version-specific.)
-
 ## Safe verification (`sandbox_check`)
 
-The bootstrap supports `SWIFTPM_SANDBOX_SELFTEST=1`. It uses `sandbox_check()` to verify sandbox presence and whether `file-write*` is permitted for a given path, without performing an unsafe host write.
+The runtime supports `SWIFTPM_SANDBOX_SELFTEST=1`. It uses `sandbox_check()` to verify sandbox presence and whether `file-write*` is permitted for a given path, without performing an unsafe host write.
 
-- Chromium’s reference for `sandbox_check` “is sandboxed”: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
+References:
+
+- Chromium `sandbox_check`: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
 - A small “sandbox_check validator” example and return semantics (`0 == allowed`): https://karol-mazurek.medium.com/sandbox-validator-e760e5d88617

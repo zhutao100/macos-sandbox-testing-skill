@@ -877,81 +877,97 @@ SWIFTPMST_INTERPOSE(swiftpmst_truncate, truncate)
 SWIFTPMST_INTERPOSE(swiftpmst_ftruncate, ftruncate)
 
 // -----------------------------
-// Bootstrap (constructor)
+// Bootstrap (entrypoints)
 // -----------------------------
 
-__attribute__((constructor))
-static void swiftpmst_bootstrap(void) {
+// The runtime may be invoked either via a Swift (or C) module initializer,
+// or via explicit calls for legacy toolchains. Ensure it runs only once.
+static int g_bootstrap_done = 0;
+
+static void swiftpmst_bootstrap_impl(void) {
     if (swiftpmst_is_disabled()) return;
 
-    swiftpmst_resolve_real_functions();
+swiftpmst_resolve_real_functions();
 
-    g_mode = swiftpmst_parse_mode();
-    g_allow_system_tmp = swiftpmst_allow_system_tmp();
-    g_tripwire_enabled = swiftpmst_tripwire_enabled();
+g_mode = swiftpmst_parse_mode();
+g_allow_system_tmp = swiftpmst_allow_system_tmp();
+g_tripwire_enabled = swiftpmst_tripwire_enabled();
 
-    // Determine workspace root.
-    if (!swiftpmst_determine_workspace_root(g_workspace_root)) {
-        swiftpmst_stderr("swiftpm-sandbox-testing", "could not determine workspace root (Package.swift not found). Set SWIFTPM_SANDBOX_WORKSPACE_ROOT to override.");
-        if (!swiftpmst_allow_unenforced()) _exit(196);
-        return;
-    }
+// Determine workspace root.
+if (!swiftpmst_determine_workspace_root(g_workspace_root)) {
+    swiftpmst_stderr("swiftpm-sandbox-testing", "could not determine workspace root (Package.swift not found). Set SWIFTPM_SANDBOX_WORKSPACE_ROOT to override.");
+    if (!swiftpmst_allow_unenforced()) _exit(196);
+    return;
+}
 
-    // Capture original HOME before redirecting.
-    const char *home = getenv("HOME");
-    if (home && *home) snprintf(g_orig_home, sizeof(g_orig_home), "%s", home);
+// Capture original HOME before redirecting.
+const char *home = getenv("HOME");
+if (home && *home) snprintf(g_orig_home, sizeof(g_orig_home), "%s", home);
 
-    // Build sandbox root under .build.
-    char run_id[64];
-    swiftpmst_build_run_id(run_id);
-    snprintf(g_sandbox_root, sizeof(g_sandbox_root), "%s/.build/swiftpm-sandbox-testing/%s", g_workspace_root, run_id);
-    snprintf(g_fake_home, sizeof(g_fake_home), "%s/home", g_sandbox_root);
-    snprintf(g_fake_tmp, sizeof(g_fake_tmp), "%s/tmp", g_sandbox_root);
-    snprintf(g_log_path, sizeof(g_log_path), "%s/logs/events.jsonl", g_sandbox_root);
+// Build sandbox root under .build.
+char run_id[64];
+swiftpmst_build_run_id(run_id);
+snprintf(g_sandbox_root, sizeof(g_sandbox_root), "%s/.build/swiftpm-sandbox-testing/%s", g_workspace_root, run_id);
+snprintf(g_fake_home, sizeof(g_fake_home), "%s/home", g_sandbox_root);
+snprintf(g_fake_tmp, sizeof(g_fake_tmp), "%s/tmp", g_sandbox_root);
+snprintf(g_log_path, sizeof(g_log_path), "%s/logs/events.jsonl", g_sandbox_root);
 
-    // Create directories (before applying sandbox).
-    if (!swiftpmst_mkdir_p(g_sandbox_root, 0755) ||
-        !swiftpmst_mkdir_p(g_fake_home, 0755) ||
-        !swiftpmst_mkdir_p(g_fake_tmp, 0755)) {
-        swiftpmst_stderr("swiftpm-sandbox-testing", "failed to create sandbox directories under .build");
-        if (!swiftpmst_allow_unenforced()) _exit(195);
-        return;
-    }
-    {
-        char logs_dir[PATH_MAX];
-        snprintf(logs_dir, sizeof(logs_dir), "%s/logs", g_sandbox_root);
-        (void)swiftpmst_mkdir_p(logs_dir, 0755);
-    }
+// Create directories (before applying sandbox).
+if (!swiftpmst_mkdir_p(g_sandbox_root, 0755) ||
+    !swiftpmst_mkdir_p(g_fake_home, 0755) ||
+    !swiftpmst_mkdir_p(g_fake_tmp, 0755)) {
+    swiftpmst_stderr("swiftpm-sandbox-testing", "failed to create sandbox directories under .build");
+    if (!swiftpmst_allow_unenforced()) _exit(195);
+    return;
+}
+{
+    char logs_dir[PATH_MAX];
+    snprintf(logs_dir, sizeof(logs_dir), "%s/logs", g_sandbox_root);
+    (void)swiftpmst_mkdir_p(logs_dir, 0755);
+}
 
-    // Redirect home and temp.
-    setenv("HOME", g_fake_home, 1);
-    setenv("CFFIXED_USER_HOME", g_fake_home, 1);
-    setenv("TMPDIR", g_fake_tmp, 1);
+// Redirect home and temp.
+setenv("HOME", g_fake_home, 1);
+setenv("CFFIXED_USER_HOME", g_fake_home, 1);
+setenv("TMPDIR", g_fake_tmp, 1);
 
-    if (swiftpmst_verbose()) {
-        fprintf(stderr, "[swiftpm-sandbox-testing] workspace=%s\n", g_workspace_root);
-        fprintf(stderr, "[swiftpm-sandbox-testing] sandbox=%s\n", g_sandbox_root);
-    }
+if (swiftpmst_verbose()) {
+    fprintf(stderr, "[swiftpm-sandbox-testing] workspace=%s\n", g_workspace_root);
+    fprintf(stderr, "[swiftpm-sandbox-testing] sandbox=%s\n", g_sandbox_root);
+}
 
-        // Activate tripwire enforcement for subsequent filesystem mutations.
-    g_tripwire_active = true;
+    // Activate tripwire enforcement for subsequent filesystem mutations.
+g_tripwire_active = true;
 
-    // Apply Seatbelt sandbox (kernel write-guard).
-    swiftpmst_apply_seatbelt_or_fail();
+// Apply Seatbelt sandbox (kernel write-guard).
+swiftpmst_apply_seatbelt_or_fail();
 
-    // Always emit a startup marker so the sandbox root is discoverable.
-    swiftpmst_log_json_event("bootstrap", g_sandbox_root, "ok", 0);
+// Always emit a startup marker so the sandbox root is discoverable.
+swiftpmst_log_json_event("bootstrap", g_sandbox_root, "ok", 0);
 
-    // Optional self-test (safe: sandbox_check only).
-    if (swiftpmst_selftest_enabled()) {
-        swiftpmst_run_selftest();
-    }
+// Optional self-test (safe: sandbox_check only).
+if (swiftpmst_selftest_enabled()) {
+    swiftpmst_run_selftest();
+}
+}
+
+// Exported entrypoint so Swift can trigger the bootstrap without needing to mix languages in a target.
+void swiftpmst_bootstrap(void) {
+    if (!__sync_bool_compare_and_swap(&g_bootstrap_done, 0, 1)) return;
+    swiftpmst_bootstrap_impl();
+}
+
+__attribute__((constructor))
+static void swiftpmst_ctor(void) {
+    swiftpmst_bootstrap();
 }
 
 #else
 
 // Non-Apple platforms: no-op.
+void swiftpmst_bootstrap(void) {}
+
 __attribute__((constructor))
-static void swiftpmst_bootstrap_nonapple(void) {}
+static void swiftpmst_ctor_nonapple(void) { swiftpmst_bootstrap(); }
 
 #endif
