@@ -4,7 +4,8 @@
 
 In the target SwiftPM package:
 
-- Each executable/test target directory should contain `SandboxTestingBootstrap.c`.
+- Each Swift executable/test target directory should contain `SwiftPMSandboxTestingBootstrap.swift`.
+- The package should contain the dedicated bootstrap target under `Sources/SwiftPMSandboxTestingBootstrap/` (or a suffixed variant if the name conflicted).
 - `swift test` should create `.build/swiftpm-sandbox-testing/<run-id>/…`.
 
 If you used the bundled verifier:

@@ -16,7 +16,7 @@ This repository is a **single-skill bundle**. Changes should preserve:
 
 ## When editing the injected bootstrap code
 
-The injected template (`assets/templates/SandboxTestingBootstrap.c`) is intended to be copied into **each SwiftPM executable and test target**. Keep it:
+The injected constructor-based template (`assets/templates/SandboxTestingBootstrap.c`) is intended to live in a dedicated **Clang bootstrap target** (`Sources/SwiftPMSandboxTestingBootstrap/`). A small Swift shim (`assets/templates/SwiftPMSandboxTestingLink.swift`) is copied into each Swift executable/test target to force-link the bootstrap object file. Keep it:
 
 - **self-contained** (no third-party dependencies)
 - **C-only in the constructor path** (avoid Foundation/Swift runtime assumptions)

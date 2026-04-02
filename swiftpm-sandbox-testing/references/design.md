@@ -12,6 +12,15 @@ A wrapper is not reliable in agentic workflows: the safety boundary must activat
 
 ## Why this approach
 
+### SwiftPM mixed-language constraint (and why we use a dedicated bootstrap target)
+
+SwiftPM targets in stable toolchains cannot mix Swift and C-family sources in a single target. Attempting to drop a `.c` file into a Swift target yields: `contains mixed language source files; feature not supported`.
+
+To keep the constructor-based Seatbelt bootstrap (and dyld interposing) while staying compatible with SwiftPM, this skill installs the bootstrap into a **separate Clang target** and then links it into Swift executable/test targets using a small Swift shim that prevents dead-stripping.
+
+Swift Evolution proposal SE-0403 proposes native mixed-language target support, but it has been returned for revision.
+
+
 ### 1) Apply the sandbox from inside the process
 
 The low-level macOS sandbox (“Seatbelt”, via the `sandbox(7)` APIs) cannot be attached to an already-running process. The process must apply the sandbox policy to itself, and (once applied) it cannot remove it; child processes can inherit the sandbox. See Mark Rowe’s overview:

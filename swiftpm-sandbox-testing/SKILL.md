@@ -51,13 +51,25 @@ Run:
 python3 <skill-path>/scripts/install.py --package-root <PATH_TO_SWIFTPM_PACKAGE>
 ```
 
-What it does:
+What it does (Swift 5.x + Swift 6+):
 
 - Uses `swift package dump-package` to enumerate targets.
-- For each **executable** and **test** target, writes a `SandboxTestingBootstrap.c` source file into that target’s source directory.
-- The C file uses a constructor (`__attribute__((constructor))`) so it runs before Swift `main` / before XCTest begins executing tests.
+- Creates a dedicated **Clang (C) target** inside the package: `Sources/SwiftPMSandboxTestingBootstrap/`
+  - Contains the constructor-based Seatbelt bootstrap (`SandboxTestingBootstrap.c`) plus a tiny header.
+  - This avoids SwiftPM's **mixed-language target** limitation (Swift + C-family in one target).
+- Patches `Package.swift` to add that bootstrap target as a dependency of each **Swift** executable and test target.
+- For each Swift executable/test target, writes a small Swift shim file: `SwiftPMSandboxTestingBootstrap.swift`
+  - The shim references `swiftpmst_force_link()` so the bootstrap object file is **not dead-stripped** by the linker.
+
+Why this is necessary:
+
+- As of SwiftPM shipped with current Xcode toolchains, a single target cannot contain both Swift and C-family sources; attempting to drop a `.c` file into a Swift target triggers:
+  - `target ... contains mixed language source files; feature not supported`
+- Swift Evolution proposal **SE-0403** proposes native SwiftPM support for mixed-language targets, but it has been **returned for revision** and is not broadly available in stable SwiftPM releases.
+- Additionally, SE-0403's initial design explicitly defers mixed-language **executable** targets, while this skill must protect `swift run` as well as `swift test`.
 
 ### 2) Verify that the boundary works (recommended)
+ Verify that the boundary works (recommended)
 
 Run:
 

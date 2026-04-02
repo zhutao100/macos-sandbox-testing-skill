@@ -10,6 +10,11 @@
 //   - This uses deprecated/private sandbox APIs (libsandbox / Seatbelt). Treat as a *dev/test guardrail*.
 //   - Keep the constructor path C/POSIX-only (no Foundation / Swift runtime assumptions).
 
+#include "SwiftPMSandboxTestingBootstrap.h"
+
+// Force-link symbol to prevent dead-stripping of this translation unit.
+void swiftpmst_force_link(void) {}
+
 #if defined(__APPLE__)
 
 #include <sandbox.h>
