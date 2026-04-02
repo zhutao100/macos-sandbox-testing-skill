@@ -42,6 +42,7 @@ Do **not** use when:
 
 - You are operating on a SwiftPM package root (has `Package.swift`).
 - You can run commands in the repo.
+- SwiftPM targets cannot contain mixed Swift+C sources; this skill installs a dedicated bootstrap C target plus a small Swift anchor file per selected target.
 
 ### 1) Install the guard into the SwiftPM package
 
@@ -54,8 +55,11 @@ python3 <skill-path>/scripts/install.py --package-root <PATH_TO_SWIFTPM_PACKAGE>
 What it does:
 
 - Uses `swift package dump-package` to enumerate targets.
-- For each **executable** and **test** target, writes a `SandboxTestingBootstrap.c` source file into that target’s source directory.
-- The C file uses a constructor (`__attribute__((constructor))`) so it runs before Swift `main` / before XCTest begins executing tests.
+- Adds a dedicated C target `SwiftPMSandboxTestingBootstrap` under `Sources/` containing `SandboxTestingBootstrap.c` (constructor-based bootstrap) and a public header.
+- Patches `Package.swift` to:
+  - register the bootstrap target, and
+  - add it as a dependency of selected **executable**/**test** targets.
+- For each selected target, writes `SwiftPMSandboxTestingAnchor.swift` to force-link the bootstrap module so its constructor runs before Swift `main` / before XCTest begins executing tests.
 
 ### 2) Verify that the boundary works (recommended)
 

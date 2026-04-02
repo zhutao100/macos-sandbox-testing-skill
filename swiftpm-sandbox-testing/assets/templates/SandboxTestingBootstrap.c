@@ -955,3 +955,10 @@ __attribute__((constructor))
 static void swiftpmst_bootstrap_nonapple(void) {}
 
 #endif
+
+// Linker anchor:
+// SwiftPM compiles C targets into static libraries, and the linker will only pull in
+// object files that satisfy referenced symbols. The sandbox bootstrap is driven by a
+// constructor in this translation unit, so we expose a tiny symbol that Swift code
+// can reference to force this object file to be linked in.
+void swiftpmst_force_link(void) {}
