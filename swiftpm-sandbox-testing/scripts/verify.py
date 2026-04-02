@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Verify swiftpm-sandbox-testing is active in a SwiftPM package.
+
+This runs `swift test` with SWIFTPM_SANDBOX_SELFTEST=1, then checks that the
+repo-local sandbox root and bootstrap marker log were produced.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def _run(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _latest_subdir(root: Path) -> Path | None:
+    if not root.exists():
+        return None
+    subs = [p for p in root.iterdir() if p.is_dir()]
+    if not subs:
+        return None
+    subs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return subs[0]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Verify swiftpm-sandbox-testing is active")
+    ap.add_argument("--package-root", required=True, type=Path)
+    ap.add_argument("--configuration", choices=["debug", "release"], default="debug")
+    args = ap.parse_args()
+
+    package_root: Path = args.package_root.resolve()
+    if not (package_root / "Package.swift").exists():
+        print(f"ERROR: Package.swift not found under {package_root}", file=sys.stderr)
+        sys.exit(2)
+
+    env = dict(os.environ)
+    env["SWIFTPM_SANDBOX_SELFTEST"] = "1"
+    env.setdefault("SWIFTPM_SANDBOX_LOG_LEVEL", "verbose")
+
+    cmd = ["swift", "test", "-c", args.configuration]
+    proc = _run(cmd, cwd=package_root, env=env)
+
+    print(proc.stdout)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        print(f"ERROR: swift test failed with exit code {proc.returncode}", file=sys.stderr)
+        sys.exit(proc.returncode)
+
+    # Locate sandbox root.
+    sandbox_parent = package_root / ".build" / "swiftpm-sandbox-testing"
+    latest = _latest_subdir(sandbox_parent)
+    if not latest:
+        print(f"ERROR: no sandbox run directory found under {sandbox_parent}", file=sys.stderr)
+        sys.exit(3)
+
+    events = latest / "logs" / "events.jsonl"
+    if not events.exists():
+        print(f"ERROR: missing bootstrap log: {events}", file=sys.stderr)
+        sys.exit(4)
+
+    txt = events.read_text(encoding="utf-8", errors="replace")
+    if "\"op\":\"bootstrap\"" not in txt:
+        # Accept either compact or spaced JSON. (Template is compact.)
+        print(f"ERROR: bootstrap marker not found in {events}", file=sys.stderr)
+        sys.exit(5)
+
+    print(f"OK: sandbox root: {latest}")
+    print(f"OK: events log: {events}")
+
+
+if __name__ == "__main__":
+    main()
