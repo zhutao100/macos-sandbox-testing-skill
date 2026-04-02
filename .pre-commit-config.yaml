@@ -1,0 +1,17 @@
+# Portable root config (works with both pre-commit and prek)
+# - Keep this file small ("thin root").
+# - Put language-specific hooks in per-subproject configs (workspace mode) or use files: scoping.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
