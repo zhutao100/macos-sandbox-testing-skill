@@ -40,10 +40,52 @@ On a macOS machine with Xcode CLT:
 ```bash
 rm -rf /tmp/spm-sandbox-smoke && mkdir -p /tmp/spm-sandbox-smoke
 cd /tmp/spm-sandbox-smoke
-swift package init --type executable
+
+# Note: `swift package init --type executable` does not necessarily create a test target
+# on modern SwiftPM toolchains; `verify.py` runs `swift test`, so create a package that
+# includes *both* an executable and tests.
+cat > Package.swift <<'SWIFT'
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "SandboxSmoke",
+    products: [
+        .library(name: "SandboxSmoke", targets: ["SandboxSmoke"]),
+        .executable(name: "SandboxSmokeRunner", targets: ["SandboxSmokeRunner"]),
+    ],
+    targets: [
+        .target(name: "SandboxSmoke"),
+        .executableTarget(name: "SandboxSmokeRunner", dependencies: ["SandboxSmoke"]),
+        .testTarget(name: "SandboxSmokeTests", dependencies: ["SandboxSmoke"]),
+    ]
+)
+SWIFT
+
+mkdir -p Sources/SandboxSmoke Sources/SandboxSmokeRunner Tests/SandboxSmokeTests
+cat > Sources/SandboxSmoke/SandboxSmoke.swift <<'SWIFT'
+public enum SandboxSmoke { public static func hello() -> String { "hello" } }
+SWIFT
+cat > Sources/SandboxSmokeRunner/main.swift <<'SWIFT'
+import SandboxSmoke
+print(SandboxSmoke.hello())
+SWIFT
+cat > Tests/SandboxSmokeTests/SandboxSmokeTests.swift <<'SWIFT'
+import XCTest
+@testable import SandboxSmoke
+
+final class SandboxSmokeTests: XCTestCase {
+    func testHello() { XCTAssertEqual(SandboxSmoke.hello(), "hello") }
+}
+SWIFT
+
+swift test
 
 python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/install.py --package-root .
 python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/verify.py --package-root .
+
+# Also sanity-check the `swift run` path:
+SWIFTPM_SANDBOX_SELFTEST=1 swift run SandboxSmokeRunner
 ```
 
 If `verify.py` fails due to denied operations, triage with:
@@ -84,6 +126,15 @@ When changes are required:
 - update the template at `swiftpm-sandbox-testing/assets/templates/SandboxTestingBootstrap.c`
 - update `references/*.md` with corrected links and explanation
 - bump `metadata.version` in `swiftpm-sandbox-testing/SKILL.md`
+
+## Package.swift patching pitfalls (installer/uninstaller)
+
+When touching `swiftpm-sandbox-testing/scripts/install.py` or `swiftpm-sandbox-testing/scripts/uninstall.py`:
+
+- Do not search/replace `targets:` blindly: product declarations like `.library(..., targets: [...])` also contain `targets:`.
+- Scope modifications to the package-level `targets: [...]` argument inside the `Package(...)` call.
+- Prefer marker-based edits and remove only what you inserted.
+- Treat the bootstrap target name as potentially suffixed (name conflicts); discover it from the installer’s marker block in `Package.swift`.
 
 ## Standard compliance
 

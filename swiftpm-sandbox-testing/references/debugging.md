@@ -4,7 +4,8 @@
 
 In the target SwiftPM package:
 
-- `Sources/SwiftPMSandboxTestingBootstrap/` should exist (bootstrap C target).
+- `Sources/SwiftPMSandboxTestingBootstrap*/` should exist (bootstrap C target; name may be suffixed if there was a conflict).
+  - It should contain `.swiftpm-sandbox-testing-installed` (marker file).
 - Each selected executable/test target directory should contain `SwiftPMSandboxTestingAnchor.swift` (force-link anchor).
 - `swift test` should create `.build/swiftpm-sandbox-testing/<run-id>/…`.
 

@@ -55,7 +55,7 @@ python3 <skill-path>/scripts/install.py --package-root <PATH_TO_SWIFTPM_PACKAGE>
 What it does:
 
 - Uses `swift package dump-package` to enumerate targets.
-- Adds a dedicated C target `SwiftPMSandboxTestingBootstrap` under `Sources/` containing `SandboxTestingBootstrap.c` (constructor-based bootstrap) and a public header.
+- Adds a dedicated C target under `Sources/` (default name: `SwiftPMSandboxTestingBootstrap`; suffixed if the name already exists) containing `SandboxTestingBootstrap.c` (constructor-based bootstrap) and a public header.
 - Patches `Package.swift` to:
   - register the bootstrap target, and
   - add it as a dependency of selected **executable**/**test** targets.
@@ -136,4 +136,5 @@ The injected bootstrap supports these environment variables:
 
 - `references/design.md` for rationale and threat model.
 - `references/debugging.md` for common macOS/Seatbelt failure modes and log collection.
+- `references/swiftpm-mixed-language-and-bootstrap.md` for SwiftPM mixed-language context and why the bootstrap target + anchor is required.
 - `references/upstream_examples.md` for upstream code/examples (Chromium, SBPL patterns, dyld interposing).

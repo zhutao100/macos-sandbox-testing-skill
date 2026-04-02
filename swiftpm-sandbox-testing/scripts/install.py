@@ -5,10 +5,11 @@ SwiftPM targets do not support *mixed* Swift + C sources in a single target.
 So instead of dropping `SandboxTestingBootstrap.c` directly into each Swift
 target, this installer adds:
 
-1) A dedicated C target `SwiftPMSandboxTestingBootstrap` under `Sources/`.
+1) A dedicated C target (default: `SwiftPMSandboxTestingBootstrap`) under `Sources/`.
    - Contains the Seatbelt + tripwire bootstrap (`SandboxTestingBootstrap.c`).
    - Exposes a tiny `swiftpmst_force_link()` symbol so Swift can force-link the
      translation unit (constructors only run if the object file is linked in).
+   - Writes a marker file so `uninstall.py` can safely remove the directory.
 
 2) A tiny Swift anchor file (`SwiftPMSandboxTestingAnchor.swift`) into each
    selected executable/test target, which imports the bootstrap module and
@@ -38,11 +39,10 @@ class TargetInfo:
     path: Path
 
 
-_BOOTSTRAP_TARGET_NAME = "SwiftPMSandboxTestingBootstrap"
-_BOOTSTRAP_REL_DIR = Path("Sources") / _BOOTSTRAP_TARGET_NAME
-_BOOTSTRAP_REL_INCLUDE_DIR = _BOOTSTRAP_REL_DIR / "include"
+_BOOTSTRAP_TARGET_DEFAULT_NAME = "SwiftPMSandboxTestingBootstrap"
 _BOOTSTRAP_C_NAME = "SandboxTestingBootstrap.c"
 _BOOTSTRAP_H_NAME = "SwiftPMSandboxTestingBootstrap.h"
+_BOOTSTRAP_MARKER_NAME = ".swiftpm-sandbox-testing-installed"
 _ANCHOR_SWIFT_NAME = "SwiftPMSandboxTestingAnchor.swift"
 _MANIFEST_BLOCK_BEGIN = "// swiftpm-sandbox-testing: begin"
 _MANIFEST_BLOCK_END = "// swiftpm-sandbox-testing: end"
@@ -74,6 +74,17 @@ def _dump_package(package_root: Path) -> dict:
         raise RuntimeError(f"failed to parse dump-package JSON: {e}") from e
 
 
+def _all_target_names(package_root: Path) -> set[str]:
+    data = _dump_package(package_root)
+    targets = data.get("targets", [])
+    out: set[str] = set()
+    for t in targets:
+        name = t.get("name")
+        if name:
+            out.add(name)
+    return out
+
+
 def _default_target_path(name: str, kind: str) -> Path:
     if kind == "test":
         return Path("Tests") / name
@@ -100,6 +111,16 @@ def enumerate_targets(package_root: Path) -> list[TargetInfo]:
         out.append(TargetInfo(name=name, kind=kind, path=(package_root / target_path)))
 
     return out
+
+
+def _looks_like_swift_target(target_dir: Path) -> bool:
+    if not target_dir.exists():
+        return False
+    # SwiftPM target sources can be nested.
+    for p in target_dir.rglob("*.swift"):
+        if p.is_file():
+            return True
+    return False
 
 
 def _skip_swift_string(src: str, i: int) -> int:
@@ -145,6 +166,43 @@ def _find_matching(src: str, open_idx: int, open_ch: str, close_ch: str) -> int:
         i += 1
 
     raise ValueError(f"unterminated {open_ch}{close_ch} region starting at {open_idx}")
+
+
+def _discover_installed_bootstrap_target_name(manifest: str) -> str | None:
+    if _MANIFEST_BLOCK_BEGIN not in manifest or _MANIFEST_BLOCK_END not in manifest:
+        return None
+
+    # Keep it simple: this marker block is inserted by this installer and is expected
+    # to contain exactly one `.target(name: "...", ...)` declaration.
+    m = re.search(
+        rf"^[ \t]*{re.escape(_MANIFEST_BLOCK_BEGIN)}\n(.*?)^[ \t]*{re.escape(_MANIFEST_BLOCK_END)}\n",
+        manifest,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not m:
+        return None
+
+    block = m.group(1)
+    m_name = re.search(r'\bname\s*:\s*"([^"]+)"', block)
+    return m_name.group(1) if m_name else None
+
+
+def _choose_bootstrap_target_name(manifest: str, *, existing_target_names: set[str]) -> str:
+    # If already installed (marker block), keep stable to avoid name churn.
+    installed = _discover_installed_bootstrap_target_name(manifest)
+    if installed:
+        return installed
+
+    if _BOOTSTRAP_TARGET_DEFAULT_NAME not in existing_target_names:
+        return _BOOTSTRAP_TARGET_DEFAULT_NAME
+
+    # Name conflict: pick a suffixed variant.
+    for i in range(1, 1000):
+        cand = f"{_BOOTSTRAP_TARGET_DEFAULT_NAME}{i}"
+        if cand not in existing_target_names:
+            return cand
+
+    raise RuntimeError("could not find a free bootstrap target name (too many conflicts?)")
 
 
 def _find_targets_array_span(manifest: str) -> tuple[int, int]:
@@ -225,8 +283,11 @@ def _indent_of_line(text: str, idx: int) -> str:
     return m.group(0) if m else ""
 
 
-def _ensure_bootstrap_target_decl(manifest: str) -> tuple[str, bool]:
-    if f'name: "{_BOOTSTRAP_TARGET_NAME}"' in manifest:
+def _ensure_bootstrap_target_decl(manifest: str, *, bootstrap_target_name: str) -> tuple[str, bool]:
+    if _MANIFEST_BLOCK_BEGIN in manifest and _MANIFEST_BLOCK_END in manifest:
+        return manifest, False
+
+    if f'name: "{bootstrap_target_name}"' in manifest:
         return manifest, False
 
     open_idx, close_idx = _find_targets_array_span(manifest)
@@ -251,8 +312,8 @@ def _ensure_bootstrap_target_decl(manifest: str) -> tuple[str, bool]:
     insertion = (
         f"        {_MANIFEST_BLOCK_BEGIN}\n"
         "        .target(\n"
-        f"            name: \"{_BOOTSTRAP_TARGET_NAME}\",\n"
-        f"            path: \"{_BOOTSTRAP_REL_DIR.as_posix()}\",\n"
+        f"            name: \"{bootstrap_target_name}\",\n"
+        f"            path: \"{(Path('Sources') / bootstrap_target_name).as_posix()}\",\n"
         "            publicHeadersPath: \"include\"\n"
         "        ),\n"
         f"        {_MANIFEST_BLOCK_END}\n"
@@ -261,8 +322,8 @@ def _ensure_bootstrap_target_decl(manifest: str) -> tuple[str, bool]:
     return manifest[:insert_at] + insertion + manifest[insert_at:], True
 
 
-def _ensure_dependency_in_target_call(call_text: str) -> tuple[str, bool]:
-    if f"\"{_BOOTSTRAP_TARGET_NAME}\"" in call_text:
+def _ensure_dependency_in_target_call(call_text: str, *, bootstrap_target_name: str) -> tuple[str, bool]:
+    if f"\"{bootstrap_target_name}\"" in call_text:
         return call_text, False
 
     dep_marker_block = "/* swiftpm-sandbox-testing */"
@@ -277,15 +338,15 @@ def _ensure_dependency_in_target_call(call_text: str) -> tuple[str, bool]:
         if "\n" in content:
             deps_indent = _indent_of_line(call_text, m.start())
             item_indent = deps_indent + " " * 4
-            insert = f"\n{item_indent}\"{_BOOTSTRAP_TARGET_NAME}\",{dep_line_suffix}"
+            insert = f"\n{item_indent}\"{bootstrap_target_name}\",{dep_line_suffix}"
             return call_text[: open_idx + 1] + insert + content + call_text[close_idx:], True
 
         # One-line dependencies array: keep it one-line and use a block comment marker.
         trimmed = content.strip()
         if trimmed:
-            new_content = f" \"{_BOOTSTRAP_TARGET_NAME}\", {dep_marker_block} {trimmed} "
+            new_content = f" \"{bootstrap_target_name}\", {dep_marker_block} {trimmed} "
         else:
-            new_content = f" \"{_BOOTSTRAP_TARGET_NAME}\" {dep_marker_block} "
+            new_content = f" \"{bootstrap_target_name}\" {dep_marker_block} "
         return call_text[: open_idx + 1] + new_content + call_text[close_idx:], True
 
     # No dependencies argument: insert after the `name:` line.
@@ -304,13 +365,13 @@ def _ensure_dependency_in_target_call(call_text: str) -> tuple[str, bool]:
 
     block = (
         f"{prefix}{indent}dependencies: [\n"
-        f"{indent}    \"{_BOOTSTRAP_TARGET_NAME}\",{dep_line_suffix}\n"
+        f"{indent}    \"{bootstrap_target_name}\",{dep_line_suffix}\n"
         f"{indent}],\n"
     )
     return call_text[:insert_pos] + block + call_text[insert_pos:], True
 
 
-def _patch_manifest_dependencies(manifest: str, *, target_names: set[str]) -> tuple[str, int]:
+def _patch_manifest_dependencies(manifest: str, *, target_names: set[str], bootstrap_target_name: str) -> tuple[str, int]:
     spans = _iter_target_call_spans(manifest)
     replacements: list[tuple[int, int, str]] = []
 
@@ -319,9 +380,9 @@ def _patch_manifest_dependencies(manifest: str, *, target_names: set[str]) -> tu
         name = _extract_target_name(call_text)
         if not name or name not in target_names:
             continue
-        if name == _BOOTSTRAP_TARGET_NAME:
+        if name == bootstrap_target_name:
             continue
-        new_call, changed = _ensure_dependency_in_target_call(call_text)
+        new_call, changed = _ensure_dependency_in_target_call(call_text, bootstrap_target_name=bootstrap_target_name)
         if changed:
             replacements.append((start, end, new_call))
 
@@ -344,12 +405,24 @@ def _write_file(dst: Path, *, contents: str, force: bool, dry_run: bool) -> str:
     return f"OK: wrote {dst}"
 
 
-def _install_bootstrap_target(package_root: Path, *, c_template: str, h_template: str, force: bool, dry_run: bool) -> list[str]:
-    c_dst = package_root / _BOOTSTRAP_REL_DIR / _BOOTSTRAP_C_NAME
-    h_dst = package_root / _BOOTSTRAP_REL_INCLUDE_DIR / _BOOTSTRAP_H_NAME
+def _install_bootstrap_target(
+    package_root: Path,
+    *,
+    bootstrap_target_name: str,
+    c_template: str,
+    h_template: str,
+    force: bool,
+    dry_run: bool,
+) -> list[str]:
+    bootstrap_rel_dir = Path("Sources") / bootstrap_target_name
+    bootstrap_rel_include_dir = bootstrap_rel_dir / "include"
+    c_dst = package_root / bootstrap_rel_dir / _BOOTSTRAP_C_NAME
+    h_dst = package_root / bootstrap_rel_include_dir / _BOOTSTRAP_H_NAME
+    marker_dst = package_root / bootstrap_rel_dir / _BOOTSTRAP_MARKER_NAME
     return [
         _write_file(c_dst, contents=c_template, force=force, dry_run=dry_run),
         _write_file(h_dst, contents=h_template, force=force, dry_run=dry_run),
+        _write_file(marker_dst, contents="swiftpm-sandbox-testing installed\n", force=False, dry_run=dry_run),
     ]
 
 
@@ -389,13 +462,18 @@ def main() -> None:
         sys.exit(2)
 
     templates_dir = Path(__file__).resolve().parent.parent / "assets" / "templates"
-    c_template = (templates_dir / "SandboxTestingBootstrap.c").read_text(encoding="utf-8")
-    h_template = (templates_dir / "SwiftPMSandboxTestingBootstrap.h").read_text(encoding="utf-8")
-    anchor_template = (templates_dir / "SwiftPMSandboxTestingAnchor.swift").read_text(encoding="utf-8")
+    c_template = (templates_dir / _BOOTSTRAP_C_NAME).read_text(encoding="utf-8")
+    h_template = (templates_dir / _BOOTSTRAP_H_NAME).read_text(encoding="utf-8")
+    anchor_template = (templates_dir / _ANCHOR_SWIFT_NAME).read_text(encoding="utf-8")
+
+    manifest_path = package_root / "Package.swift"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    bootstrap_target_name = _choose_bootstrap_target_name(manifest, existing_target_names=_all_target_names(package_root))
 
     targets = enumerate_targets(package_root)
     if args.only != "all":
         targets = [t for t in targets if t.kind == args.only]
+    targets = [t for t in targets if _looks_like_swift_target(t.path)]
 
     if not targets:
         print("No executable/test targets found. Nothing to install.")
@@ -403,16 +481,24 @@ def main() -> None:
 
     # 1) Install bootstrap target sources.
     for msg in _install_bootstrap_target(
-        package_root, c_template=c_template, h_template=h_template, force=args.force, dry_run=args.dry_run
+        package_root,
+        bootstrap_target_name=bootstrap_target_name,
+        c_template=c_template,
+        h_template=h_template,
+        force=args.force,
+        dry_run=args.dry_run,
     ):
         print(msg)
 
     # 2) Patch Package.swift (add target + wire dependencies).
-    manifest_path = package_root / "Package.swift"
-    manifest = manifest_path.read_text(encoding="utf-8")
+    anchor_template = anchor_template.replace("SwiftPMSandboxTestingBootstrap", bootstrap_target_name)
 
-    manifest, added_target = _ensure_bootstrap_target_decl(manifest)
-    manifest, dep_patches = _patch_manifest_dependencies(manifest, target_names={t.name for t in targets})
+    manifest, added_target = _ensure_bootstrap_target_decl(manifest, bootstrap_target_name=bootstrap_target_name)
+    manifest, dep_patches = _patch_manifest_dependencies(
+        manifest,
+        target_names={t.name for t in targets},
+        bootstrap_target_name=bootstrap_target_name,
+    )
 
     if args.dry_run:
         if added_target:

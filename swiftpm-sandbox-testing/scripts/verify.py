@@ -47,6 +47,18 @@ def main() -> None:
         print(f"ERROR: Package.swift not found under {package_root}", file=sys.stderr)
         sys.exit(2)
 
+    # Preflight: best-effort signal that install.py patched Package.swift.
+    pkg_text = (package_root / "Package.swift").read_text(encoding="utf-8", errors="replace")
+    if "swiftpm-sandbox-testing" not in pkg_text:
+        print(
+            "WARN: Package.swift does not appear to be patched by swiftpm-sandbox-testing (no markers found).",
+            file=sys.stderr,
+        )
+        print(
+            "      If swift test does not produce a sandbox log, re-run install.py and inspect its Package.swift patch output.",
+            file=sys.stderr,
+        )
+
     env = dict(os.environ)
     env["SWIFTPM_SANDBOX_SELFTEST"] = "1"
     env.setdefault("SWIFTPM_SANDBOX_LOG_LEVEL", "verbose")
