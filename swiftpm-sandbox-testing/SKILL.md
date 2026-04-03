@@ -1,10 +1,10 @@
 ---
 name: swiftpm-sandbox-testing
-description: Use this skill when you need to add or verify an in-process sandbox/tripwire safety boundary for SwiftPM packages on macOS, so direct `swift run` and `swift test` cannot accidentally write outside the repo workspace. Installs a Seatbelt (`sandbox_init_with_parameters`) write guard plus optional filesystem-mutation logging into SwiftPM executable and test targets.
+description: Use this skill when you need to add or verify an in-process sandbox/tripwire safety boundary for SwiftPM packages on macOS, so direct `swift run` and `swift test` cannot accidentally write outside the repo workspace. Installs a Seatbelt (`sandbox_init_with_parameters`) write guard plus optional filesystem/network mutation logging into SwiftPM executable and test targets.
 license: MIT
 compatibility: macOS 15/26+ (Darwin). Requires SwiftPM (`swift`), Xcode Command Line Tools. Uses deprecated libsandbox Seatbelt APIs for dev/test safety; not intended as a shipped-product security guarantee.
 metadata:
-  version: "1.0"
+  version: "1.1"
   author: "swiftpm-sandbox-testing skill bundle"
   scope: "SwiftPM dev/test host-mutation prevention"
 ---
@@ -16,13 +16,14 @@ Ensure that **direct** invocations of:
 - `swift run` (development executable)
 - `swift test` (XCTest runner)
 
-cannot **destructively mutate host-machine data outside the repo workspace**, without relying on external wrappers.
+cannot **destructively mutate host-machine data outside the repo workspace** (and, by default, cannot perform outbound IP networking), without relying on external wrappers.
 
 This skill installs a **self-bootstrapping guard** into SwiftPM targets:
 
 1. **Kernel-enforced write boundary** (Seatbelt sandbox via `sandbox_init_with_parameters`).
-2. **Tripwire logging** for common filesystem mutations (dyld interposing + backtrace), writing JSONL events into a repo-local sandbox directory.
-3. **Redirection of HOME/TMP** into `.build/…` to reduce accidental persistence in the real user home.
+2. **Kernel-enforced IP network guard** (Seatbelt `network-*` rules) to deny outbound connections and accidental listeners unless explicitly enabled.
+3. **Tripwire logging** for common filesystem mutations and network attempts (dyld interposing + backtrace), writing JSONL events into a repo-local sandbox directory.
+4. **Redirection of HOME/TMP** into `.build/…` to reduce accidental persistence in the real user home.
 
 ## When to use
 
@@ -116,6 +117,22 @@ The injected bootstrap supports these environment variables:
   - Default is **on** because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file under `/var/folders/.../T` as part of `swift test` execution on macOS.
   - Set to `0` for the strict “workspace-only writes” profile (expect some `swift test` invocations to fail on macOS unless the toolchain’s temp behavior is also addressed).
 
+
+### Network access (IP networking)
+
+- `SWIFTPM_SANDBOX_NETWORK=deny|localhost|allow|allowlist` (default: `deny`)
+  - `deny`: block outbound IP connections and binding/listening on IP sockets.
+  - `localhost`: allow loopback-only IP networking (best-effort; see debugging notes about IPv6 dual-stack edge cases).
+  - `allow`: do not apply any Seatbelt network restrictions (least restrictive).
+  - `allowlist`: block outbound IP connections except for a coarse allowlist (and still deny bind/listen).
+
+- `SWIFTPM_SANDBOX_NETWORK_ALLOWLIST="localhost:43128,*:443"`
+  - Comma/whitespace-separated allowlist entries used when `SWIFTPM_SANDBOX_NETWORK=allowlist` (or when this variable is set and `SWIFTPM_SANDBOX_NETWORK` is not `allow`/`localhost`).
+  - The allowlist is intentionally coarse because Seatbelt can’t match arbitrary domains; practical entries are typically:
+    - `localhost:<port>` for a loopback proxy, or
+    - `*:<port>` to allow any host on a specific port (use sparingly).
+
+
 ### Diagnostic knobs
 
 - `SWIFTPM_SANDBOX_PRESERVE_HOME=1`
@@ -128,7 +145,7 @@ The injected bootstrap supports these environment variables:
   - Controls stderr verbosity. JSONL logs are still written.
 
 - `SWIFTPM_SANDBOX_SELFTEST=1`
-  - Runs a safe self-test at startup using `sandbox_check()` (no host write required).
+  - Runs a safe self-test at startup using `sandbox_check()` (no host write required) and, when network is expected to be restricted, a denied non-blocking `connect()`.
 
 - `SWIFTPM_SANDBOX_TRIPWIRE=0`
   - Disables interposition logging/denying/redirecting. Seatbelt still enforces.
@@ -137,7 +154,8 @@ The injected bootstrap supports these environment variables:
 
 - Sandbox root: `<workspace>/.build/swiftpm-sandbox-testing/<run-id>/`
 - Logs: `<sandbox-root>/logs/events.jsonl`
-  - The log always includes a `bootstrap` marker; additional events appear when out-of-bounds mutations are attempted.
+  - The log always includes a `bootstrap` marker.
+  - Additional events appear when out-of-bounds mutations are attempted (filesystem) and when denied network operations occur (e.g. `net.connect`, `net.bind`, plus an optional `selftest.network` marker when self-test is enabled).
   - Seatbelt applies to child processes, but the tripwire log is emitted only by processes that include the injected bootstrap code.
 
 ## References
@@ -146,3 +164,4 @@ The injected bootstrap supports these environment variables:
 - `references/debugging.md` for common macOS/Seatbelt failure modes and log collection.
 - `references/swiftpm-mixed-language-and-bootstrap.md` for SwiftPM mixed-language context and why the bootstrap target + anchor is required.
 - `references/upstream_examples.md` for upstream code/examples (Chromium, SBPL patterns, dyld interposing).
+- `references/network_research.md` for a short narrative of viable network IO approaches and why Seatbelt SBPL was chosen.

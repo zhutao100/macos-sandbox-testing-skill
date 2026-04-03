@@ -2,7 +2,8 @@
 """Verify swiftpm-sandbox-testing is active in a SwiftPM package.
 
 This runs `swift test` with SWIFTPM_SANDBOX_SELFTEST=1, then checks that the
-repo-local sandbox root and bootstrap marker log were produced.
+repo-local sandbox root, bootstrap marker, and (when network is expected to be restricted)
+a network self-test marker log were produced.
 """
 
 from __future__ import annotations
@@ -100,6 +101,14 @@ def main() -> None:
         # Accept either compact or spaced JSON. (Template is compact.)
         print(f"ERROR: bootstrap marker not found in {events}", file=sys.stderr)
         sys.exit(5)
+
+    if '"op":"selftest.network"' not in txt:
+        print(
+            f"WARN: network self-test marker not found in {events} (network may be enabled, allowlisted, or tripwire disabled).",
+            file=sys.stderr,
+        )
+    else:
+        print("OK: network self-test marker found")
 
     print(f"OK: sandbox root: {latest}")
     print(f"OK: events log: {events}")

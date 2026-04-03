@@ -89,3 +89,30 @@ static const struct interpose_pair interpose_open = {
   (const void *)(unsigned long)&open
 };
 ```
+
+## 7) SBPL network rules (modern examples)
+
+Useful for understanding the practical shape of Seatbelt network restrictions and their limitations:
+
+- SBPL network syntax overview + note that `remote ip` host matching is typically limited to `*` or `localhost`:
+  - https://lucaswiman.github.io/blog/2023-06-04--macos-sandbox/
+
+- A large, actively maintained SBPL generator showing:
+  - `network-outbound`, `network-bind`, `network-inbound`
+  - unix-socket allowances
+  - loopback/IPv6 dual-stack edge cases
+  - localhost proxy “hole punching” patterns
+  - https://github.com/anthropic-experimental/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts
+
+- A practical “kernel blocks all, proxy outside” pattern used for agent sandboxes:
+  - https://github.com/michaelneale/agent-seatbelt-sandbox
+
+### Network allowlist snippet patterns
+
+```scheme
+; deny all outbound IP
+(deny network-outbound (remote ip "*:*"))
+
+; allow loopback proxy port only
+(allow network-outbound (remote ip "localhost:43128"))
+```

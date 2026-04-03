@@ -18,6 +18,8 @@ This repository is a **single-skill bundle**. Changes should preserve:
 
 The injected template (`assets/templates/SandboxTestingBootstrap.c`) is intended to be copied into **each SwiftPM executable and test target**. Keep it:
 
+- **network-conscious** (ensure network restrictions remain coarse-but-reliable on modern macOS, and don’t accidentally break AF_UNIX IPC unless explicitly intended)
+
 - **self-contained** (no third-party dependencies)
 - **C-only in the constructor path** (avoid Foundation/Swift runtime assumptions)
 - **namespaced** (prefix symbols; avoid exporting non-static symbols unless interposing)

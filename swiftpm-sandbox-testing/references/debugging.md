@@ -77,6 +77,59 @@ log stream --style syslog --predicate 'eventMessage CONTAINS "deny" AND (process
 
 (Exact predicates vary by OS version and subsystem.)
 
+
+## Network troubleshooting
+
+### 1) Confirm the default “no network” behavior
+
+By default, the injected bootstrap blocks **IP networking** (outbound connections + bind/listen) using Seatbelt `network-*` rules.
+
+Quick check:
+
+```bash
+SWIFTPM_SANDBOX_NETWORK=deny swift test
+```
+
+If the test target attempts an outbound connection, you should see:
+
+- a `net.connect` (or `net.bind`) event in `events.jsonl`, and/or
+- a `sandboxd` denial in unified logging.
+
+### 2) Allow localhost-only networking (loopback)
+
+If tests need a local database or test server:
+
+```bash
+SWIFTPM_SANDBOX_NETWORK=localhost swift test
+```
+
+Notes:
+
+- Some runtimes bind dual-stack sockets and can hit IPv4-mapped IPv6 (`::ffff:127.0.0.1`) edge cases; if you see unexpected denies, prefer explicit loopback binds (`127.0.0.1` / `::1`) in your test harness.
+
+### 3) Allow a narrow loopback proxy hole
+
+A common pattern is to keep the sandbox “no network”, but allow only a loopback proxy port:
+
+```bash
+SWIFTPM_SANDBOX_NETWORK=allowlist \
+SWIFTPM_SANDBOX_NETWORK_ALLOWLIST="localhost:43128" \
+swift test
+```
+
+(Seatbelt allowlists are intentionally coarse; it can’t directly match arbitrary domains.)
+
+### 4) System-level logs for network denies (unified logging)
+
+Sandbox denials often include `deny network-outbound` / `deny network-bind` messages:
+
+```bash
+log stream --style syslog --predicate 'eventMessage CONTAINS "deny network" AND (process == "<your-binary-name>")'
+```
+
+The exact predicate varies by OS version and process naming.
+
+
 ## 5) Interpreting `events.jsonl`
 
 Each event includes:

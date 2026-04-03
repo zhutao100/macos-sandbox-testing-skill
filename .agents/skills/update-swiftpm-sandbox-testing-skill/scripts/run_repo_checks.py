@@ -10,6 +10,7 @@ Designed to be:
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -54,7 +55,11 @@ def _check_template_invariants(template: Path) -> None:
     txt = template.read_text(encoding="utf-8")
 
     required_env = [
+        "SWIFTPM_SANDBOX_ALLOW_UNENFORCED",
         "SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP",
+        "SWIFTPM_SANDBOX_DISABLE",
+        "SWIFTPM_SANDBOX_NETWORK",
+        "SWIFTPM_SANDBOX_NETWORK_ALLOWLIST",
         "SWIFTPM_SANDBOX_TRIPWIRE",
         "SWIFTPM_SANDBOX_MODE",
         "SWIFTPM_SANDBOX_SELFTEST",
@@ -63,22 +68,36 @@ def _check_template_invariants(template: Path) -> None:
     if missing:
         raise RuntimeError("Template is missing expected env vars: " + ", ".join(missing))
 
-    # Ensure deny-before-allow ordering inside the SBPL strings.
+    # Ensure deny-before-allow ordering for critical SBPL snippets.
     # (This check is intentionally simple; it catches accidental reversals.)
-    def _check_profile(name: str) -> None:
-        m = re.search(rf'static const char \*{re.escape(name)}\s*=\s*(.*?);\n', txt, re.DOTALL)
-        if not m:
-            raise RuntimeError(f"Could not locate {name} SBPL string in template")
-        body = m.group(1)
-        deny = body.find('"    "(deny file-write*)')
-        # Above string includes escapes and indentation; do a simpler check:
-        deny = body.find('(deny file-write*)')
-        allow = body.find('(allow file-write*')
-        if deny == -1 or allow == -1 or not (deny < allow):
-            raise RuntimeError(f"SBPL ordering check failed for {name}: expected deny before allow")
+    def _check_order(label: str, deny: str, allow: str) -> None:
+        deny_i = txt.find(deny)
+        allow_i = txt.find(allow)
+        if deny_i == -1 or allow_i == -1:
+            raise RuntimeError(f"SBPL ordering check failed for {label}: missing '{deny}' or '{allow}'")
+        if not (deny_i < allow_i):
+            raise RuntimeError(f"SBPL ordering check failed for {label}: expected deny before allow")
 
-    _check_profile("kSwiftpmstProfileStrict")
-    _check_profile("kSwiftpmstProfileCompat")
+    _check_order("file-write*", "(deny file-write*)", "(allow file-write*")
+
+    # Network rules are optional, but when present ensure we don't accidentally allow-before-deny.
+    if "network-outbound" in txt:
+        _check_order("network-outbound", "(deny network-outbound", "(allow network-outbound")
+    if "network-bind" in txt:
+        _check_order("network-bind", "(deny network-bind", "(allow network-bind")
+
+    if "(deny network*)" in txt:
+        raise RuntimeError("Template contains a broad '(deny network*)' rule (likely breaks AF_UNIX IPC)")
+
+
+def _check_template_compiles(template: Path, *, cwd: Path) -> None:
+    # This template uses Apple headers (sandbox.h), so only attempt to compile on macOS.
+    if sys.platform != "darwin":
+        return
+    clang = shutil.which("clang")
+    if not clang:
+        return
+    _run([clang, "-fsyntax-only", "-std=c11", "-Wall", "-Wextra", "-Werror", str(template)], cwd=cwd)
 
 
 def main() -> None:
@@ -108,6 +127,7 @@ def main() -> None:
 
     print("4) Template invariants…")
     _check_template_invariants(template)
+    _check_template_compiles(template, cwd=root)
 
     print("OK: repo checks passed")
 

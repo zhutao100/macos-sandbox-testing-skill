@@ -4,8 +4,8 @@ This repository contains an **agent skill** for adding a **self-bootstrapping, i
 
 The goal is to make **direct** `swift run` and `swift test` invocations safer by:
 
-- applying a **kernel-enforced Seatbelt sandbox** in-process (via `sandbox_init_with_parameters`) to deny filesystem writes outside the repo workspace, and
-- installing an optional **tripwire/interposition layer** that logs (and can deny/redirect) common filesystem mutation APIs into a repo-local JSONL log.
+- applying a **kernel-enforced Seatbelt sandbox** in-process (via `sandbox_init_with_parameters`) to deny filesystem writes outside the repo workspace, and to optionally restrict IP networking, and
+- installing an optional **tripwire/interposition layer** that logs (and can deny/redirect) common filesystem mutation APIs, plus denies/logs outbound IP connections and bind attempts, into a repo-local JSONL log.
 
 It is designed for **development and test environments**, where preventing accidental destructive writes to the host is more important than using only Apple-supported APIs.
 

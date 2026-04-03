@@ -61,6 +61,49 @@ Notes:
 - The tripwire logger is intentionally biased toward **attribution of out-of-bounds mutations** (deny/redirect) rather than logging every successful write.
 - Seatbelt enforcement applies to child processes, but dyld interposing is **per-process**. Child helpers (e.g. SwiftPM’s `swiftpm-xctest-helper`) inherit the kernel sandbox but will not emit tripwire logs unless they also include the injected bootstrap.
 
+
+### 5) Optional IP network guard + network tripwire
+
+In addition to filesystem write-guarding, this skill can **block and log unexpected IP networking** from `swift run` / `swift test` targets.
+
+**Kernel enforcement (Seatbelt / SBPL):**
+
+Seatbelt SBPL supports network operations such as:
+
+- `network-outbound` (establish outbound connections / send traffic)
+- `network-bind` (bind/listen on local sockets)
+- `network-inbound` (receive/read from sockets)
+
+with coarse matchers like `(remote ip "localhost:43128")` or `(remote ip "*:443")`.
+
+Modern agent sandbox toolchains use the same underlying primitives to:
+- block all network by default, or
+- punch a narrow hole to a loopback proxy (e.g. allow outbound only to `localhost:<port>`).
+
+References/examples:
+
+- SBPL network filter syntax and limitations (host is typically `*` or `localhost`): https://lucaswiman.github.io/blog/2023-06-04--macos-sandbox/
+- A production “agent sandbox” pattern: kernel blocks everything except loopback, proxy runs outside the sandbox: https://github.com/michaelneale/agent-seatbelt-sandbox
+- A large, actively maintained SBPL generator showing `network-outbound`/`network-bind`/`network-inbound`, plus notes on loopback matching pitfalls: https://github.com/anthropic-experimental/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts
+- OpenAI Codex’s Seatbelt policy codebase uses additional network-related allowances when enabling networking (e.g., TLS cache writes): https://raw.githubusercontent.com/openai/codex/main/codex-rs/core/src/seatbelt_network_policy.sbpl
+
+**Tripwire logging (dyld interposing):**
+
+Seatbelt denials are often visible via unified logging (`sandboxd`), but a repo-local JSONL record is often more actionable. The bootstrap therefore also interposes:
+
+- `connect()` (logged as `net.connect`)
+- `bind()` (logged as `net.bind`)
+
+and denies disallowed destinations early with `EPERM` (unless `SWIFTPM_SANDBOX_MODE=report-only`).
+
+**Practical design choices:**
+
+- The default network mode is **deny IP networking** (outbound + bind/listen), while leaving **AF_UNIX** local IPC unaffected. Broad rules like `(deny network*)` can break programs that rely on Unix-domain sockets for local IPC.
+- “localhost-only” policies can be sensitive to IPv6 dual-stack behavior (for example, IPv4-mapped IPv6 addresses like `::ffff:127.0.0.1`). Prefer explicit loopback binds (`127.0.0.1` / `::1`) when possible.
+
+Configuration is controlled via `SWIFTPM_SANDBOX_NETWORK` and `SWIFTPM_SANDBOX_NETWORK_ALLOWLIST` (see `SKILL.md`).
+
+
 ## Threat model and non-goals
 
 This design is intended to prevent **accidental destructive host mutations** during development/testing.
