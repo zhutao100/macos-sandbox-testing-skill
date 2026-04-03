@@ -28,6 +28,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 // sandbox_init_with_parameters is available in libsystem_sandbox, but is not always declared in the public SDK headers.
 // Signature matches Chromium's usage.
@@ -109,6 +113,70 @@ static bool swiftpmst_tripwire_enabled(void) {
     return strcmp(s, "0") != 0;
 }
 
+
+// -----------------------------
+// Network configuration (env-driven)
+// -----------------------------
+
+typedef enum {
+    SWIFTPMST_NET_DENY = 0,       // default: block IP networking (outbound + bind)
+    SWIFTPMST_NET_LOCALHOST = 1,  // allow localhost-only TCP/UDP (best-effort; see docs)
+    SWIFTPMST_NET_ALLOW = 2,      // allow all network (least restrictive)
+    SWIFTPMST_NET_ALLOWLIST = 3,  // allow outbound to a coarse allowlist (see SWIFTPM_SANDBOX_NETWORK_ALLOWLIST)
+} swiftpmst_network_mode_t;
+
+#define SWIFTPMST_MAX_NET_ALLOWLIST 16
+#define SWIFTPMST_MAX_NET_TOKEN 63
+
+static swiftpmst_network_mode_t swiftpmst_parse_network_mode(void) {
+    const char *s = getenv("SWIFTPM_SANDBOX_NETWORK");
+    if (!s || !*s) return SWIFTPMST_NET_DENY;
+    if (strcmp(s, "deny") == 0) return SWIFTPMST_NET_DENY;
+    if (strcmp(s, "localhost") == 0) return SWIFTPMST_NET_LOCALHOST;
+    if (strcmp(s, "allow") == 0) return SWIFTPMST_NET_ALLOW;
+    if (strcmp(s, "allowlist") == 0) return SWIFTPMST_NET_ALLOWLIST;
+    // Fail closed for unknown values.
+    return SWIFTPMST_NET_DENY;
+}
+
+static bool swiftpmst_net_token_is_safe(const char *t) {
+    // Allow only a conservative subset used by Seatbelt filters:
+    //   localhost:*   localhost:43128   *:443   *:*
+    // No quoting or escaping is supported here (dev/test guardrail).
+    if (!t || !*t) return false;
+    for (const char *p = t; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '.' || c == ':' || c == '*' || c == '-' || c == '_') {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+static int swiftpmst_parse_network_allowlist(char out[][SWIFTPMST_MAX_NET_TOKEN + 1], int cap) {
+    const char *raw = getenv("SWIFTPM_SANDBOX_NETWORK_ALLOWLIST");
+    if (!raw || !*raw) return 0;
+
+    // Copy into a local mutable buffer.
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", raw);
+
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ", \t\n", &save); tok && n < cap; tok = strtok_r(NULL, ", \t\n", &save)) {
+        size_t len = strlen(tok);
+        if (len == 0 || len > SWIFTPMST_MAX_NET_TOKEN) continue;
+        if (!swiftpmst_net_token_is_safe(tok)) continue;
+        snprintf(out[n], SWIFTPMST_MAX_NET_TOKEN + 1, "%s", tok);
+        n++;
+    }
+    return n;
+}
+
 // -----------------------------
 // Global state
 // -----------------------------
@@ -123,6 +191,10 @@ static char g_orig_home[PATH_MAX] = {0};
 static swiftpmst_mode_t g_mode = SWIFTPMST_MODE_STRICT;
 
 static bool g_allow_system_tmp = false;
+static swiftpmst_network_mode_t g_network_mode = SWIFTPMST_NET_DENY;
+static int g_net_allow_count = 0;
+static char g_net_allow[SWIFTPMST_MAX_NET_ALLOWLIST][SWIFTPMST_MAX_NET_TOKEN + 1] = {{0}};
+
 static bool g_tripwire_enabled = true;
 static bool g_tripwire_active = false;
 
@@ -144,6 +216,8 @@ static int (*real_mkdir)(const char *path, mode_t mode) = NULL;
 static int (*real_rmdir)(const char *path) = NULL;
 static int (*real_truncate)(const char *path, off_t length) = NULL;
 static int (*real_ftruncate)(int fd, off_t length) = NULL;
+static int (*real_connect)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
+static int (*real_bind)(int sockfd, const struct sockaddr *addr, socklen_t addrlen) = NULL;
 
 static void swiftpmst_resolve_real_functions(void) {
     if (real_open) return;
@@ -168,6 +242,8 @@ static void swiftpmst_resolve_real_functions(void) {
     real_rmdir = (int (*)(const char *))dlsym(RTLD_NEXT, "rmdir");
     real_truncate = (int (*)(const char *, off_t))dlsym(RTLD_NEXT, "truncate");
     real_ftruncate = (int (*)(int, off_t))dlsym(RTLD_NEXT, "ftruncate");
+    real_connect = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
+    real_bind = (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "bind");
 }
 
 // -----------------------------
@@ -416,45 +492,88 @@ static void swiftpmst_log_json_event(
 // SBPL profile
 // -----------------------------
 
-// Write-guard profile:
-// - allow everything by default
-// - allow file-write* only under WORKSPACE_ROOT / SANDBOX_ROOT / system temp
-// - deny all other file-write*
+// Write-guard + optional network-guard profile.
 //
-// NOTE: SBPL evaluation and rule precedence are subtle; keep this profile simple.
-// SBPL profile:
+// Pattern:
 // - Start permissive (allow default) to avoid needing an enormous allowlist for reads/frameworks.
-// - Deny all file-write* by default.
-// - Re-allow file-write* only for workspace and sandbox roots (and optionally system temp if enabled).
+// - Deny writes by default (deny file-write*), then allow writes only in known-safe roots.
+// - Optionally deny IP networking (deny network-*) with narrow filters so AF_UNIX local IPC can keep working.
 //
-// NOTE: Rule ordering matters in practice for SBPL. A common working pattern is
-// "broad deny, then allow exceptions".
-static const char *kSwiftpmstProfileStrict =
-    "(version 1)\n"
-    "(allow default)\n"
-    "(deny file-write*)\n"
-    // Allow writing to /dev/null (common sink used by libraries).
-    "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n"
-    "(allow file-write*\n"
-    "  (subpath (param \"WORKSPACE_ROOT\"))\n"
-    "  (subpath (param \"SANDBOX_ROOT\"))\n"
-    ")\n";
+// NOTE: Rule ordering matters in practice for SBPL. A common working pattern is "broad deny, then allow exceptions".
 
-static const char *kSwiftpmstProfileCompat =
-    "(version 1)\n"
-    "(allow default)\n"
-    "(deny file-write*)\n"
-    "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n"
-    "(allow file-write*\n"
-    "  (subpath (param \"WORKSPACE_ROOT\"))\n"
-    "  (subpath (param \"SANDBOX_ROOT\"))\n"
-    "  (subpath \"/tmp\")\n"
-    "  (subpath \"/private/tmp\")\n"
-    "  (subpath \"/var/tmp\")\n"
-    "  (subpath \"/private/var/tmp\")\n"
-    "  (subpath \"/var/folders\")\n"
-    "  (subpath \"/private/var/folders\")\n"
-    ")\n";
+static void swiftpmst_sbpl_append(char *out, size_t cap, size_t *pos, const char *s) {
+    if (!out || !pos || !s) return;
+    size_t n = strlen(s);
+    if (*pos + n + 1 >= cap) return;
+    memcpy(out + *pos, s, n);
+    *pos += n;
+    out[*pos] = 0;
+}
+
+static void swiftpmst_build_profile(char out[8192]) {
+    size_t pos = 0;
+    out[0] = 0;
+
+    swiftpmst_sbpl_append(out, 8192, &pos, "(version 1)\n");
+    swiftpmst_sbpl_append(out, 8192, &pos, "(allow default)\n");
+
+    // Filesystem write restrictions (primary goal).
+    swiftpmst_sbpl_append(out, 8192, &pos, "(deny file-write*)\n");
+    swiftpmst_sbpl_append(out, 8192, &pos,
+        "(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n");
+
+    swiftpmst_sbpl_append(out, 8192, &pos, "(allow file-write*\n");
+    swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath (param \"WORKSPACE_ROOT\"))\n");
+    swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath (param \"SANDBOX_ROOT\"))\n");
+    if (g_allow_system_tmp) {
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/tmp\")\n");
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/private/tmp\")\n");
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/var/tmp\")\n");
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/private/var/tmp\")\n");
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/var/folders\")\n");
+        swiftpmst_sbpl_append(out, 8192, &pos, "  (subpath \"/private/var/folders\")\n");
+    }
+    swiftpmst_sbpl_append(out, 8192, &pos, ")\n");
+
+    // Network restrictions (optional).
+    //
+    // We restrict IP networking using the ip-based filters, so AF_UNIX sockets are unaffected unless you
+    // add explicit unix-socket rules. This is important for local IPC patterns (ssh-agent, docker, etc.).
+    //
+    // Modes:
+    // - deny (default): block IP outbound + bind + inbound.
+    // - localhost: allow only localhost IP networking; deny everything else.
+    // - allow: no network restrictions.
+    // - allowlist: block outbound except for the allowlist; also deny bind (no servers).
+    if (g_network_mode != SWIFTPMST_NET_ALLOW) {
+        swiftpmst_sbpl_append(out, 8192, &pos, "\n; Network\n");
+
+        // Deny outbound IP connections by default.
+        swiftpmst_sbpl_append(out, 8192, &pos, "(deny network-outbound (remote ip \"*:*\"))\n");
+
+        // Deny binding/listening on IP sockets by default (prevents accidental servers).
+        swiftpmst_sbpl_append(out, 8192, &pos, "(deny network-bind (local ip \"*:*\"))\n");
+
+        if (g_network_mode == SWIFTPMST_NET_DENY || g_network_mode == SWIFTPMST_NET_LOCALHOST) {
+            // Deny inbound socket reads by default for non-local interfaces (defense in depth).
+            swiftpmst_sbpl_append(out, 8192, &pos, "(deny network-inbound (local ip \"*:*\"))\n");
+        }
+
+        if (g_network_mode == SWIFTPMST_NET_LOCALHOST) {
+            // Allow loopback-only networking.
+            swiftpmst_sbpl_append(out, 8192, &pos, "(allow network-outbound (remote ip \"localhost:*\"))\n");
+            swiftpmst_sbpl_append(out, 8192, &pos, "(allow network-bind (local ip \"localhost:*\"))\n");
+            swiftpmst_sbpl_append(out, 8192, &pos, "(allow network-inbound (local ip \"localhost:*\"))\n");
+        } else if (g_network_mode == SWIFTPMST_NET_ALLOWLIST) {
+            for (int i = 0; i < g_net_allow_count; i++) {
+                // Allow coarse allowlist entries, e.g. "localhost:43128" or "*:443".
+                swiftpmst_sbpl_append(out, 8192, &pos, "(allow network-outbound (remote ip \"");
+                swiftpmst_sbpl_append(out, 8192, &pos, g_net_allow[i]);
+                swiftpmst_sbpl_append(out, 8192, &pos, "\"))\n");
+            }
+        }
+    }
+}
 
 static void swiftpmst_apply_seatbelt_or_fail(void) {
     // Apply sandbox profile.
@@ -468,7 +587,8 @@ static void swiftpmst_apply_seatbelt_or_fail(void) {
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    const char *profile = g_allow_system_tmp ? kSwiftpmstProfileCompat : kSwiftpmstProfileStrict;
+    char profile[8192];
+    swiftpmst_build_profile(profile);
     int rc = sandbox_init_with_parameters(profile, 0, params, &errbuf);
 #pragma clang diagnostic pop
 
@@ -490,8 +610,9 @@ static void swiftpmst_apply_seatbelt_or_fail(void) {
     }
 }
 
+
 // -----------------------------
-// Self-test (safe: uses sandbox_check)
+// Self-test (safe: uses sandbox_check + denied non-blocking connect)
 // -----------------------------
 
 static void swiftpmst_run_selftest(void) {
@@ -517,6 +638,44 @@ static void swiftpmst_run_selftest(void) {
         if (rc == 0) {
             swiftpmst_stderr("swiftpm-sandbox-testing", "SELFTEST FAILED: file-write* appears allowed for original HOME");
             _exit(199);
+        }
+    }
+
+    // 3) Optional network check when network is expected to be restricted.
+    // Use a non-blocking connect() to a public IP and require a fast denial. This should be denied by
+    // the kernel sandbox (and/or a higher-level sandbox) and should not transmit packets.
+    if (g_network_mode == SWIFTPMST_NET_DENY || g_network_mode == SWIFTPMST_NET_LOCALHOST) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+            int fl = fcntl(fd, F_GETFL, 0);
+            if (fl >= 0) (void)fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
+            struct sockaddr_in sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sin_family = AF_INET;
+            sa.sin_port = htons(443);
+            sa.sin_addr.s_addr = htonl(0x01010101u); // 1.1.1.1
+
+            // Bypass our own connect() interposer so we exercise the kernel policy.
+            int saved = g_in_hook;
+            g_in_hook = 1;
+            errno = 0;
+            int rc = connect(fd, (const struct sockaddr *)&sa, (socklen_t)sizeof(sa));
+            int e = errno;
+            g_in_hook = saved;
+
+            close(fd);
+
+            if (rc == 0 || e == EINPROGRESS) {
+                swiftpmst_stderr("swiftpm-sandbox-testing", "SELFTEST FAILED: outbound connect was not denied as expected");
+                _exit(200);
+            }
+            if (e != EPERM && e != EACCES) {
+                swiftpmst_stderr("swiftpm-sandbox-testing", "SELFTEST FAILED: unexpected error from outbound connect (expected EPERM/EACCES)");
+                _exit(200);
+            }
+
+            swiftpmst_log_json_event("selftest.network", "inet:1.1.1.1:443", "deny", e);
         }
     }
 
@@ -1060,6 +1219,214 @@ int swiftpmst_ftruncate(int fd, off_t length) {
     return r;
 }
 
+
+// -----------------------------
+// Network tripwire (dyld interposing)
+// -----------------------------
+
+static bool swiftpmst_sockaddr_is_loopback(const struct sockaddr *sa) {
+    if (!sa) return false;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        // 127.0.0.0/8
+        uint32_t a = ntohl(sin->sin_addr.s_addr);
+        return ((a & 0xFF000000u) == 0x7F000000u);
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        if (IN6_IS_ADDR_LOOPBACK(&sin6->sin6_addr)) return true;
+        if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
+            // ::ffff:127.x.y.z
+            const uint8_t *b = (const uint8_t *)&sin6->sin6_addr;
+            return (b[12] == 127);
+        }
+        return false;
+    }
+    return false;
+}
+
+static uint16_t swiftpmst_sockaddr_port(const struct sockaddr *sa) {
+    if (!sa) return 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        return ntohs(sin->sin_port);
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        return ntohs(sin6->sin6_port);
+    }
+    return 0;
+}
+
+static void swiftpmst_format_sockaddr(const struct sockaddr *sa, socklen_t salen, char out[256]) {
+    if (!out) return;
+    out[0] = 0;
+    if (!sa) {
+        snprintf(out, 256, "<null>");
+        return;
+    }
+
+    if (sa->sa_family == AF_INET && salen >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+        char ip[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+        snprintf(out, 256, "inet:%s:%u", ip, (unsigned)ntohs(sin->sin_port));
+        return;
+    }
+
+    if (sa->sa_family == AF_INET6 && salen >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+        char ip[INET6_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET6, &sin6->sin6_addr, ip, sizeof(ip));
+        snprintf(out, 256, "inet6:[%s]:%u", ip, (unsigned)ntohs(sin6->sin6_port));
+        return;
+    }
+
+    if (sa->sa_family == AF_UNIX && salen >= (socklen_t)sizeof(struct sockaddr_un)) {
+        const struct sockaddr_un *sun = (const struct sockaddr_un *)sa;
+        if (sun->sun_path[0]) {
+            snprintf(out, 256, "unix:%s", sun->sun_path);
+        } else {
+            snprintf(out, 256, "unix:<anonymous>");
+        }
+        return;
+    }
+
+    snprintf(out, 256, "family:%d", (int)sa->sa_family);
+    (void)salen;
+}
+
+static bool swiftpmst_net_match_allow_token(const char *tok, bool is_loopback, uint16_t port) {
+    if (!tok || !*tok) return false;
+
+    if (strcmp(tok, "*:*") == 0) return true;
+
+    if (strncmp(tok, "localhost:", 10) == 0) {
+        if (!is_loopback) return false;
+        const char *ps = tok + 10;
+        if (strcmp(ps, "*") == 0) return true;
+        long p = strtol(ps, NULL, 10);
+        if (p <= 0 || p > 65535) return false;
+        return port == (uint16_t)p;
+    }
+
+    if (tok[0] == '*' && tok[1] == ':') {
+        const char *ps = tok + 2;
+        if (strcmp(ps, "*") == 0) return true;
+        long p = strtol(ps, NULL, 10);
+        if (p <= 0 || p > 65535) return false;
+        return port == (uint16_t)p;
+    }
+
+    return false;
+}
+
+static bool swiftpmst_net_outbound_allowed(const struct sockaddr *sa) {
+    if (!sa) return false;
+
+    // Always allow AF_UNIX unless the caller opted into "deny-all" (not implemented here).
+    if (sa->sa_family == AF_UNIX) return true;
+
+    // Only gate IP families.
+    if (sa->sa_family != AF_INET && sa->sa_family != AF_INET6) return true;
+
+    if (g_network_mode == SWIFTPMST_NET_ALLOW) return true;
+
+    const bool is_loopback = swiftpmst_sockaddr_is_loopback(sa);
+    const uint16_t port = swiftpmst_sockaddr_port(sa);
+
+    if (g_network_mode == SWIFTPMST_NET_LOCALHOST) {
+        return is_loopback;
+    }
+
+    if (g_network_mode == SWIFTPMST_NET_ALLOWLIST) {
+        for (int i = 0; i < g_net_allow_count; i++) {
+            if (swiftpmst_net_match_allow_token(g_net_allow[i], is_loopback, port)) return true;
+        }
+        return false;
+    }
+
+    // Default: deny.
+    return false;
+}
+
+static bool swiftpmst_net_bind_allowed(const struct sockaddr *sa) {
+    if (!sa) return false;
+
+    // Always allow AF_UNIX binds by default.
+    if (sa->sa_family == AF_UNIX) return true;
+
+    if (sa->sa_family != AF_INET && sa->sa_family != AF_INET6) return true;
+
+    if (g_network_mode == SWIFTPMST_NET_ALLOW) return true;
+    if (g_network_mode == SWIFTPMST_NET_LOCALHOST) return swiftpmst_sockaddr_is_loopback(sa);
+
+    // Deny bind in deny + allowlist modes (treat as "no servers").
+    return false;
+}
+
+int swiftpmst_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    swiftpmst_resolve_real_functions();
+    if (!real_connect) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    if (g_in_hook) return real_connect(sockfd, addr, addrlen);
+    if (!g_tripwire_active || !g_tripwire_enabled) return real_connect(sockfd, addr, addrlen);
+
+    g_in_hook = 1;
+
+    bool allow = swiftpmst_net_outbound_allowed(addr);
+
+    if (!allow) {
+        char ep[256];
+        swiftpmst_format_sockaddr(addr, addrlen, ep);
+        swiftpmst_log_json_event("net.connect", ep, "deny", EPERM);
+
+        if (g_mode != SWIFTPMST_MODE_REPORT_ONLY) {
+            errno = EPERM;
+            g_in_hook = 0;
+            return -1;
+        }
+    }
+
+    int r = real_connect(sockfd, addr, addrlen);
+    g_in_hook = 0;
+    return r;
+}
+
+int swiftpmst_bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    swiftpmst_resolve_real_functions();
+    if (!real_bind) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    if (g_in_hook) return real_bind(sockfd, addr, addrlen);
+    if (!g_tripwire_active || !g_tripwire_enabled) return real_bind(sockfd, addr, addrlen);
+
+    g_in_hook = 1;
+
+    bool allow = swiftpmst_net_bind_allowed(addr);
+
+    if (!allow) {
+        char ep[256];
+        swiftpmst_format_sockaddr(addr, addrlen, ep);
+        swiftpmst_log_json_event("net.bind", ep, "deny", EPERM);
+
+        if (g_mode != SWIFTPMST_MODE_REPORT_ONLY) {
+            errno = EPERM;
+            g_in_hook = 0;
+            return -1;
+        }
+    }
+
+    int r = real_bind(sockfd, addr, addrlen);
+    g_in_hook = 0;
+    return r;
+}
+
 // dyld interposing table
 struct swiftpmst_interpose {
     const void *replacement;
@@ -1103,6 +1470,8 @@ SWIFTPMST_INTERPOSE(swiftpmst_mkdir, mkdir)
 SWIFTPMST_INTERPOSE(swiftpmst_rmdir, rmdir)
 SWIFTPMST_INTERPOSE(swiftpmst_truncate, truncate)
 SWIFTPMST_INTERPOSE(swiftpmst_ftruncate, ftruncate)
+SWIFTPMST_INTERPOSE(swiftpmst_connect, connect)
+SWIFTPMST_INTERPOSE(swiftpmst_bind, bind)
 
 // -----------------------------
 // Bootstrap (constructor)
@@ -1116,6 +1485,12 @@ static void swiftpmst_bootstrap(void) {
 
     g_mode = swiftpmst_parse_mode();
     g_allow_system_tmp = swiftpmst_allow_system_tmp();
+    g_network_mode = swiftpmst_parse_network_mode();
+    g_net_allow_count = swiftpmst_parse_network_allowlist(g_net_allow, SWIFTPMST_MAX_NET_ALLOWLIST);
+    if (g_net_allow_count > 0 && g_network_mode != SWIFTPMST_NET_ALLOW && g_network_mode != SWIFTPMST_NET_LOCALHOST) {
+        // If an allowlist is present, prefer allowlist mode unless the user explicitly asked for full allow.
+        g_network_mode = SWIFTPMST_NET_ALLOWLIST;
+    }
     g_tripwire_enabled = swiftpmst_tripwire_enabled();
 
     // Determine workspace root.
