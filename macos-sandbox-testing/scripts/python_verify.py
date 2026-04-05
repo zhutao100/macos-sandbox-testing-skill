@@ -40,13 +40,19 @@ def _latest_subdir(root: Path) -> Path | None:
 
 def _detect_venv(project_root: Path, explicit: Path | None) -> Path:
     if explicit:
-        return explicit
+        p = explicit
+        if not p.is_absolute():
+            p = project_root / p
+        return p.resolve()
     env = os.environ.get("VIRTUAL_ENV")
     if env:
-        return Path(env)
+        p = Path(env)
+        if not p.is_absolute():
+            p = project_root / p
+        return p.resolve()
     cand = project_root / ".venv"
     if cand.exists():
-        return cand
+        return cand.resolve()
     raise RuntimeError("No venv specified. Pass --venv, or activate a venv, or create .venv/")
 
 
