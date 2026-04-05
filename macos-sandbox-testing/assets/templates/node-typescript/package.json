@@ -1,0 +1,10 @@
+{
+  "name": "sandboxed-node-template",
+  "private": true,
+  "version": "0.0.0",
+  "gypfile": true,
+  "scripts": {
+    "build:sandbox": "node-gyp rebuild",
+    "test:sandboxed": "SEATBELT_SANDBOX_SELFTEST=1 NODE_OPTIONS=--require ./sandbox/preload.js npm test"
+  }
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove swiftpm-sandbox-testing from a SwiftPM package.
+"""Remove macos-sandbox-testing from a SwiftPM package.
 
 This uninstalls:
 - The Swift anchor file from selected executable/test targets
@@ -127,14 +127,14 @@ def _remove_bootstrap_from_dependencies(call_text: str, *, bootstrap_target_name
         new_lines = [
             ln
             for ln in lines
-            if "swiftpm-sandbox-testing" not in ln and not any(f"\"{n}\"" in ln for n in bootstrap_target_names)
+            if "macos-sandbox-testing" not in ln and not any(f"\"{n}\"" in ln for n in bootstrap_target_names)
         ]
         new_content = "".join(new_lines)
         return call_text[: open_idx + 1] + new_content + call_text[close_idx:], True
 
     # One-line array: remove marker and the bootstrap dependency entry.
     trimmed = content.strip()
-    trimmed = re.sub(r"/\*\s*swiftpm-sandbox-testing\s*\*/", "", trimmed)
+    trimmed = re.sub(r"/\*\s*macos-sandbox-testing\s*\*/", "", trimmed)
     for name in bootstrap_target_names:
         trimmed = trimmed.replace(f"\"{name}\"", "")
     trimmed = re.sub(r",\s*,", ",", trimmed)
@@ -181,7 +181,7 @@ def _patch_manifest_remove_bootstrap(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Uninstall swiftpm-sandbox-testing bootstrap from a SwiftPM package")
+    ap = argparse.ArgumentParser(description="Uninstall macos-sandbox-testing bootstrap from a SwiftPM package")
     ap.add_argument("--package-root", required=True, type=Path)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(

@@ -56,6 +56,7 @@ _NAME_RULE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 
 def validate_skill_dir(skill_dir: Path) -> None:
+    skill_dir = skill_dir.resolve()
     if not skill_dir.is_dir():
         raise ValueError(f"Not a directory: {skill_dir}")
 

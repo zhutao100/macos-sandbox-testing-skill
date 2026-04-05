@@ -1,17 +1,17 @@
 ---
-name: update-swiftpm-sandbox-testing-skill
+name: update-macos-sandbox-testing-skill
 description: Internal maintenance skill for this repo. Use it to refresh web references, validate SBPL/Seatbelt assumptions for modern macOS, update the injected bootstrap template, and keep the skill bundle compliant with Codex/Open Agent skill standards.
 license: MIT
 compatibility: macOS 15/26+ (for sandbox behavior verification). Requires python3 for repo checks; optionally Xcode Command Line Tools for smoke tests.
 metadata:
   version: "1.0"
-  author: "swiftpm-sandbox-testing maintainers"
+  author: "macos-sandbox-testing maintainers"
   scope: "repo-internal maintenance"
 ---
 
 ## Objective
 
-Keep the `swiftpm-sandbox-testing` skill accurate, current, and standards-compliant as macOS and toolchains evolve.
+Keep the `macos-sandbox-testing` skill accurate, current, and standards-compliant as macOS and toolchains evolve.
 
 This internal skill is intended to be used by future agentic sessions working *inside this repository*.
 
@@ -20,7 +20,7 @@ This internal skill is intended to be used by future agentic sessions working *i
 Run the bundled repo checks:
 
 ```bash
-python3 .agents/skills/update-swiftpm-sandbox-testing-skill/scripts/run_repo_checks.py
+python3 .agents/skills/update-macos-sandbox-testing-skill/scripts/run_repo_checks.py
 ```
 
 This validates:
@@ -81,16 +81,16 @@ SWIFT
 
 swift test
 
-python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/install.py --package-root .
-python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/verify.py --package-root .
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/swiftpm_install.py --package-root .
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/swiftpm_verify.py --package-root .
 
 # Also sanity-check the `swift run` path:
-SWIFTPM_SANDBOX_SELFTEST=1 swift run SandboxSmokeRunner
+SEATBELT_SANDBOX_SELFTEST=1 swift run SandboxSmokeRunner
 ```
 
-If `verify.py` fails due to denied operations, triage with:
+If `swiftpm_verify.py` fails due to denied operations, triage with:
 
-- `swiftpm-sandbox-testing/references/debugging.md`
+- `macos-sandbox-testing/references/debugging.md`
 
 ### 2) Re-validate SBPL assumptions against upstream examples
 
@@ -103,7 +103,7 @@ This repo relies on behaviors that Apple does not treat as â€œpublic API stableâ
 
 Start from:
 
-- `swiftpm-sandbox-testing/references/upstream_examples.md`
+- `macos-sandbox-testing/references/upstream_examples.md`
 
 ## Web research checklist (update sources and examples)
 
@@ -123,13 +123,13 @@ Perform broad, up-to-date checks (prefer primary sources):
 
 When changes are required:
 
-- update the template at `swiftpm-sandbox-testing/assets/templates/SandboxTestingBootstrap.c`
+- update the template at `macos-sandbox-testing/assets/templates/SandboxTestingBootstrap.c`
 - update `references/*.md` with corrected links and explanation
-- bump `metadata.version` in `swiftpm-sandbox-testing/SKILL.md`
+- bump `metadata.version` in `macos-sandbox-testing/SKILL.md`
 
 ## Package.swift patching pitfalls (installer/uninstaller)
 
-When touching `swiftpm-sandbox-testing/scripts/install.py` or `swiftpm-sandbox-testing/scripts/uninstall.py`:
+When touching `macos-sandbox-testing/scripts/swiftpm_install.py` or `macos-sandbox-testing/scripts/swiftpm_uninstall.py`:
 
 - Do not search/replace `targets:` blindly: product declarations like `.library(..., targets: [...])` also contain `targets:`.
 - Scope modifications to the package-level `targets: [...]` argument inside the `Package(...)` call.
@@ -141,5 +141,5 @@ When touching `swiftpm-sandbox-testing/scripts/install.py` or `swiftpm-sandbox-t
 After edits:
 
 - re-run `run_repo_checks.py`
-- ensure `swiftpm-sandbox-testing/SKILL.md` `name:` equals directory name
+- ensure `macos-sandbox-testing/SKILL.md` `name:` equals directory name
 - ensure scripts remain deterministic and do not require network access during basic validation

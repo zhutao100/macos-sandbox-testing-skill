@@ -8,6 +8,8 @@ repos:
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
       - id: check-yaml
       - id: check-json
       - id: check-toml
@@ -15,3 +17,13 @@ repos:
       - id: detect-private-key
       - id: check-added-large-files
         args: ["--maxkb=1024"]
+
+  - repo: local
+    hooks:
+      - id: macos-sandbox-testing-repo-checks
+        name: macos-sandbox-testing repo checks
+        entry: python3 .agents/skills/update-macos-sandbox-testing-skill/scripts/run_repo_checks.py
+        language: system
+        pass_filenames: false
+        require_serial: true
+        always_run: true

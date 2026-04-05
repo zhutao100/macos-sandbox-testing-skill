@@ -33,7 +33,7 @@ To avoid wrapper scripts, the guard must initialize as early as possible.
 
 On Mach-O, C/Clang “constructors” (functions with `__attribute__((constructor))`) run at load time before `main` — **as long as the object file containing the constructor is actually linked into the final binary**.
 
-SwiftPM builds Clang targets as static libraries; linkers may omit object files from static libraries unless a symbol is referenced. This is why the bootstrap translation unit exports a tiny symbol (`swiftpmst_force_link()`), and a small Swift “anchor” file references it.
+SwiftPM builds Clang targets as static libraries; linkers may omit object files from static libraries unless a symbol is referenced. This is why the bootstrap translation unit exports a tiny symbol (`msst_force_link()`), and a small Swift “anchor” file references it.
 
 As an alternative (future-facing), Swift can also register Mach-O module initializers via the `__DATA,__mod_init_func` section. Swift 6.3 introduced stable section placement (`@section` / `@used`) via SE-0492, and older toolchains may support the underscored `@_section` / `@_used` form behind an experimental feature.
 
@@ -46,7 +46,7 @@ This skill installs:
    - `include/SwiftPMSandboxTestingBootstrap.h`
 2. A Swift anchor file injected into each selected executable/test target:
    - `SwiftPMSandboxTestingAnchor.swift`
-   - imports the bootstrap module and references `swiftpmst_force_link()` so the bootstrap object file is not dropped by the linker.
+   - imports the bootstrap module and references `msst_force_link()` so the bootstrap object file is not dropped by the linker.
 3. Marker-based `Package.swift` edits (target declaration + per-target dependency wiring) so uninstall can safely revert changes.
 
 This avoids mixed-language targets while still providing “runs even on direct `swift run` / `swift test`” behavior.

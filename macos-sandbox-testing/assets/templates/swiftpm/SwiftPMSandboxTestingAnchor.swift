@@ -1,4 +1,4 @@
-// swiftpm-sandbox-testing
+// macos-sandbox-testing
 //
 // Linker anchor for the in-process Seatbelt sandbox/tripwire bootstrap.
 //
@@ -8,4 +8,4 @@
 
 import SwiftPMSandboxTestingBootstrap
 
-private let _swiftpmSandboxTestingBootstrapAnchor: Void = swiftpmst_force_link()
+private let _swiftpmSandboxTestingBootstrapAnchor: Void = msst_force_link()

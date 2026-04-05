@@ -1,0 +1,14 @@
+# Workspace config for `.agents/skills/update-macos-sandbox-testing-skill/`.
+#
+# Repo-wide hygiene lives in the root `.pre-commit-config.yaml`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: validate-internal-skill-dir
+        name: validate update-macos-sandbox-testing-skill dir
+        entry: python3 ../../../macos-sandbox-testing/scripts/validate_skill_bundle.py --skill-dir .
+        language: system
+        pass_filenames: false
+        require_serial: true
+        always_run: true
