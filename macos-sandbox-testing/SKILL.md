@@ -2,9 +2,9 @@
 name: macos-sandbox-testing
 description: Use this skill when you need an in-process macOS Seatbelt sandbox/tripwire safety boundary for local dev/test commands (SwiftPM, Cargo, etc.), so direct invocations like `swift test` or `cargo test` cannot accidentally write outside the repo workspace. Installs a Seatbelt (`sandbox_init_with_parameters`) write guard plus optional filesystem/network mutation logging into supported executables and test runners.
 license: MIT
-compatibility: macOS 15/26+ (Darwin). Requires python3; SwiftPM (`swift`) for Swift packages; Cargo (`cargo`) for Rust packages. Uses deprecated libsandbox Seatbelt APIs for dev/test safety; not intended as a shipped-product security guarantee.
+compatibility: macOS 15/26+ (Darwin). Requires python3. Optional toolchains per integration; SwiftPM (`swift`), Cargo (`cargo`), Go (`go` with cgo), Node (`node`/`npm` + `node-gyp`), Python venv (`python -m venv` + `clang`). Uses deprecated libsandbox Seatbelt APIs for dev/test safety; not intended as a shipped-product security guarantee.
 metadata:
-  version: "1.2"
+  version: "1.3"
   author: "macos-sandbox-testing skill bundle"
   scope: "macOS dev/test host-mutation prevention"
 ---
@@ -15,6 +15,9 @@ Ensure that **direct** invocations of:
 
 - `swift run` / `swift test` (SwiftPM)
 - `cargo run` / `cargo test` (Cargo)
+- `go test` (Go)
+- `npm test` / `npm run …` (Node/TypeScript script entrypoints)
+- `<venv>/bin/python …` / `<venv>/bin/pytest …` (Python, within the instrumented venv)
 
 cannot **destructively mutate host-machine data outside the repo workspace** (and, by default, cannot perform outbound IP networking), without relying on external wrappers.
 
@@ -31,6 +34,9 @@ These are “works well, no-wrapper” integrations where the sandbox is compile
 
 - **SwiftPM (Swift):** `scripts/swiftpm_install.py`, `scripts/swiftpm_verify.py`, `scripts/swiftpm_uninstall.py`
 - **Rust / Cargo:** `scripts/cargo_install.py`, `scripts/cargo_verify.py`, `scripts/cargo_uninstall.py`
+- **Go:** `scripts/go_install.py`, `scripts/go_verify.py`, `scripts/go_uninstall.py` (cgo-based; applies to `go test ./...`)
+- **Node / TypeScript:** `scripts/node_install.py`, `scripts/node_verify.py`, `scripts/node_uninstall.py` (native preload; applies to `npm test`/scripted entrypoints)
+- **Python (venv):** `scripts/python_install.py`, `scripts/python_verify.py`, `scripts/python_uninstall.py` (venv hook + dylib preload)
 
 Other ecosystems are discussed in `references/other_languages.md` (often possible, but with weaker guarantees or more awkward bootstrapping).
 
@@ -122,6 +128,100 @@ python3 <skill-path>/scripts/cargo_verify.py --project-root <PATH_TO_CARGO_WORKS
 
 ```bash
 python3 <skill-path>/scripts/cargo_uninstall.py --project-root <PATH_TO_CARGO_WORKSPACE>
+```
+
+
+### Go
+
+#### 0) Preconditions
+
+- You are operating on a Go module root (has `go.mod`).
+- Your workflow uses cgo (`CGO_ENABLED=1`), which is the default on macOS for most toolchains.
+
+#### 1) Install the guard into the Go module
+
+```bash
+python3 <skill-path>/scripts/go_install.py --project-root <PATH_TO_GO_MODULE>
+```
+
+What it does:
+
+- Installs a cgo-enabled helper package under `tools/` that compiles and links `SandboxTestingBootstrap.c`.
+- Generates a per-package `_test.go` file (`zz_macos_sandbox_testing_bootstrap_test.go`) that blank-imports the helper package so the bootstrap is linked into **every** `go test` binary.
+
+#### 2) Verify that the boundary works (recommended)
+
+```bash
+python3 <skill-path>/scripts/go_verify.py --project-root <PATH_TO_GO_MODULE>
+```
+
+#### 3) Uninstall (optional)
+
+```bash
+python3 <skill-path>/scripts/go_uninstall.py --project-root <PATH_TO_GO_MODULE>
+```
+
+### Node / TypeScript
+
+#### 0) Preconditions
+
+- You are operating on a Node project root (has `package.json`).
+- You run tests through a scripted entrypoint (typically `npm test`, `pnpm test`, or `yarn test`).
+- You have `node-gyp` available on `PATH` (native addon build).
+
+#### 1) Install the guard into the Node project
+
+```bash
+python3 <skill-path>/scripts/node_install.py --project-root <PATH_TO_NODE_PROJECT>
+```
+
+What it does:
+
+- Installs a small `node-gyp` N-API addon under `tools/macos-sandbox-testing-node/` that links `SandboxTestingBootstrap.c`.
+- Patches `package.json` so:
+  - a `pretest` hook builds the addon, and
+  - `npm test` runs with `NODE_OPTIONS=--require=./tools/macos-sandbox-testing-node/sandbox/preload.js`, which loads the addon early.
+
+#### 2) Verify that the boundary works (recommended)
+
+```bash
+python3 <skill-path>/scripts/node_verify.py --project-root <PATH_TO_NODE_PROJECT>
+```
+
+#### 3) Uninstall (optional)
+
+```bash
+python3 <skill-path>/scripts/node_uninstall.py --project-root <PATH_TO_NODE_PROJECT>
+```
+
+### Python (venv)
+
+#### 0) Preconditions
+
+- You run tests using a Python virtual environment (venv).
+- You run Python from the venv (e.g. `.venv/bin/python`, `.venv/bin/pytest`).
+
+#### 1) Install the guard into the venv
+
+```bash
+python3 <skill-path>/scripts/python_install.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
+```
+
+What it does:
+
+- Compiles `SandboxTestingBootstrap.c` into a small dylib (`macos_sandbox_testing_bootstrap.dylib`).
+- Installs a venv startup hook (`macos_sandbox_testing.pth`) that imports a tiny loader module, which loads the dylib at interpreter startup.
+
+#### 2) Verify that the boundary works (recommended)
+
+```bash
+python3 <skill-path>/scripts/python_verify.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
+```
+
+#### 3) Uninstall (optional)
+
+```bash
+python3 <skill-path>/scripts/python_uninstall.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
 ```
 
 ### Interpreted / VM ecosystems (notes)

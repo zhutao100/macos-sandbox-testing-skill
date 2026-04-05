@@ -4,6 +4,9 @@ This repository contains an **agent skill** for adding a **self-bootstrapping, i
 
 - SwiftPM (`swift run`, `swift test`)
 - Cargo (`cargo run`, `cargo test`)
+- Go (`go test`)
+- Node/TypeScript (`npm test` / scripted entrypoints)
+- Python (within an instrumented venv)
 
 The goal is to make **direct** invocations safer by:
 
@@ -17,7 +20,9 @@ The underlying bootstrap (`SandboxTestingBootstrap.c`) is language-agnostic. See
 - `macos-sandbox-testing/references/other_languages.md`
 - `macos-sandbox-testing/references/interpreted-and-vm-ecosystems.md`
 - `macos-sandbox-testing/assets/templates/rust-cargo/`
+- `macos-sandbox-testing/assets/templates/go/`
 - `macos-sandbox-testing/assets/templates/node-typescript/`
+- `macos-sandbox-testing/assets/templates/python-venv/`
 
 ## Install into Codex CLI / skills-compatible agents
 
