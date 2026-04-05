@@ -15,7 +15,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from install import (
+from swiftpm_install import (
     _ANCHOR_SWIFT_NAME,
     _BOOTSTRAP_C_NAME,
     _BOOTSTRAP_H_NAME,

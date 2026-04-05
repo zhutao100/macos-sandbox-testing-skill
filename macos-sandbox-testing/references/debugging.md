@@ -2,6 +2,8 @@
 
 ## 1) Confirm the guard is installed
 
+If available for your toolchain, prefer running the bundled verifier script first (it also checks for expected artifacts under `.build/macos-sandbox-testing/`).
+
 ### SwiftPM (Swift)
 
 In the target SwiftPM package:
@@ -34,6 +36,57 @@ If you used the bundled verifier:
 python3 <skill-path>/scripts/cargo_verify.py --project-root <repo>
 ```
 
+### Xcode
+
+In the target Xcode repo:
+
+- Your target should compile `SandboxTestingBootstrap.c` (Build Phases → Compile Sources).
+- Your scheme should set `SEATBELT_SANDBOX_WORKSPACE_ROOT=$(PROJECT_DIR)` (recommended).
+- Running tests should create `<workspace>/.build/macos-sandbox-testing/<run-id>/…`.
+
+See `references/xcode.md` for injection guidance (host app vs `.xctest` bundle).
+
+### Go
+
+In the target Go module:
+
+- `tools/macos-seatbelt-testing-go/` should exist and contain `.macos-sandbox-testing-installed.json` (marker file).
+- Packages should contain `zz_macos_sandbox_testing_bootstrap_test.go` (generated blank-import to force-link the bootstrap into `go test` binaries).
+- `go test` should create `.build/macos-sandbox-testing/<run-id>/…`.
+
+If you used the bundled verifier:
+
+```bash
+python3 <skill-path>/scripts/go_verify.py --project-root <repo>
+```
+
+### Node / TypeScript
+
+In the target Node repo:
+
+- `tools/macos-sandbox-testing-node/` should exist and contain `.macos-sandbox-testing-installed.json` (marker file).
+- `package.json` should be patched so `npm test` runs with a preload (`NODE_OPTIONS=--require=.../preload.js`).
+- `npm test` should create `.build/macos-sandbox-testing/<run-id>/…`.
+
+If you used the bundled verifier:
+
+```bash
+python3 <skill-path>/scripts/node_verify.py --project-root <repo>
+```
+
+### Python (venv)
+
+In the target repo + venv:
+
+- The venv’s `site-packages` should contain `macos_sandbox_testing.installed.json` (marker file).
+- Running the venv’s Python should create `.build/macos-sandbox-testing/<run-id>/…` under the configured workspace root.
+
+If you used the bundled verifier:
+
+```bash
+python3 <skill-path>/scripts/python_verify.py --project-root <repo> --venv <path-to-venv>
+```
+
 ## 2) Find the sandbox run directory
 
 Each run produces:
@@ -48,6 +101,7 @@ Notes:
 
 - The tripwire logger records **out-of-bounds** mutation attempts (and always emits a `bootstrap` marker). If your run never attempts an out-of-bounds write, the log may contain only the `bootstrap` event.
 - Seatbelt applies to child processes, but the tripwire logger is **in-process**: helper binaries (e.g. SwiftPM’s `swiftpm-xctest-helper`) will not emit `events.jsonl` unless they also include the injected bootstrap code.
+  - For Xcode runs, explicitly set `SEATBELT_SANDBOX_WORKSPACE_ROOT` so logs land under the repo you expect.
 
 ## 3) If tests fail early
 
@@ -101,6 +155,8 @@ log stream --style syslog --predicate 'eventMessage CONTAINS "deny" AND (process
 
 
 ## Network troubleshooting
+
+See `references/configuration.md` for the full set of network knobs (including allowlists).
 
 ### 1) Confirm the default “no network” behavior
 
@@ -207,5 +263,5 @@ Self-test uses `sandbox_check()` to validate sandbox presence and whether `file-
 
 Reference semantics:
 
-- Chromium `sandbox_check`: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
+- Chromium `sandbox_check`: https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt.cc
 - `sandbox_check` return values (`0 == allowed`): https://karol-mazurek.medium.com/sandbox-validator-e760e5d88617

@@ -1,5 +1,13 @@
 # Upstream examples to read
 
+## 0) Private header declarations (API surface)
+
+Apple does not expose some sandbox interfaces in the public SDK headers, but the symbols exist in the system sandbox library.
+
+References that include the private declarations:
+
+- `sandbox_init_with_parameters` / `sandbox_check` prototypes in a private `sandbox.h` mirror: https://github.com/rpetrich/LightMessaging/blob/master/sandbox.h
+
 This skill intentionally mirrors patterns used by long-lived macOS sandbox deployments (Chromium, etc.), but adapted for SwiftPM dev/test safety.
 
 ## 1) Chromium Seatbelt integration (C++)
@@ -9,7 +17,7 @@ This skill intentionally mirrors patterns used by long-lived macOS sandbox deplo
 
 Source:
 
-- https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
+- https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt.cc
 
 ## 2) Chromium SBPL + parameters example (design doc)
 

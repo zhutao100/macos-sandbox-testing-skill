@@ -27,14 +27,18 @@ This fits the core constraint: we compile the guard into the executable/test run
 
 ### 2) Use `sandbox_init_with_parameters` with a parameterized SBPL profile
 
-Seatbelt policies are expressed in SBPL (a Scheme-like DSL). Parameters allow the policy to be configured at runtime (e.g., workspace root, sandbox root). Chromium maintains a production-quality macOS sandbox implementation that demonstrates:
+Seatbelt policies are expressed in SBPL (a Scheme-like DSL). Parameters allow the policy to be configured at runtime (e.g., workspace root, sandbox root).
+
+On modern macOS, `sandbox_init_with_parameters` is an **undocumented / private** interface that exists in the system sandbox library, and its declaration is typically hidden behind `__APPLE_API_PRIVATE` in private headers. This skill therefore declares the symbol explicitly and keeps the callsite strictly C/POSIX.
+
+Chromium maintains a production-quality macOS sandbox implementation that demonstrates:
 
 - the `sandbox_init_with_parameters` signature and the null-terminated `key, value, …, NULL` parameter array
 - `sandbox_check(getpid(), NULL, …)` as a canonical “is sandboxed” check
 
 Useful references:
 
-- Chromium `seatbelt.cc` (API usage and signatures): https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
+- Chromium `seatbelt.cc` (API usage and signatures): https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt.cc
 - Chromium “Mac Sandbox V2 Design Doc” (SBPL + parameter example): https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt_sandbox_design.md
 
 ### 3) Redirect HOME and TMP into a repo-local honeypot
@@ -106,7 +110,7 @@ and denies disallowed destinations early with `EPERM` (unless `SEATBELT_SANDBOX_
 - The default network mode is **deny IP networking** (outbound + bind/listen), while leaving **AF_UNIX** local IPC unaffected. Broad rules like `(deny network*)` can break programs that rely on Unix-domain sockets for local IPC.
 - “localhost-only” policies can be sensitive to IPv6 dual-stack behavior (for example, IPv4-mapped IPv6 addresses like `::ffff:127.0.0.1`). Prefer explicit loopback binds (`127.0.0.1` / `::1`) when possible.
 
-Configuration is controlled via `SEATBELT_SANDBOX_NETWORK` and `SEATBELT_SANDBOX_NETWORK_ALLOWLIST` (see `SKILL.md`).
+Configuration is controlled via `SEATBELT_SANDBOX_NETWORK` and `SEATBELT_SANDBOX_NETWORK_ALLOWLIST` (see `references/configuration.md`).
 
 
 ## Threat model and non-goals
@@ -125,9 +129,10 @@ This skill uses a **blacklist-style** profile:
 
 By default, the allowlist also includes common system temp locations (notably `/var/folders/.../T`) because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file there as part of `swift test` on macOS. Set `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=0` to enable the strict “workspace-only writes” profile.
 
-Empirically, **rule ordering matters**. A common working pattern is “deny, then allow exceptions” (i.e., allow rules placed after broad denies). See this write-up with concrete `sandbox-exec` examples:
+Empirically, **rule ordering matters**. SBPL rules are evaluated sequentially, and later matching rules can override earlier ones (a practical “last applicable rule wins” model). A common working pattern is therefore “deny, then allow exceptions” (i.e., allow rules placed after broad denies). See:
 
 - https://7402.org/blog/2020/macos-sandboxing-of-folder.html
+- https://8ksec.io/reading-ios-sandbox-profiles/
 
 (Apple’s original “Sandbox Guide” PDFs also describe `(allow default)` vs `(deny default)` modes, but are historical and not macOS-version-specific.)
 
@@ -135,5 +140,5 @@ Empirically, **rule ordering matters**. A common working pattern is “deny, the
 
 The bootstrap supports `SEATBELT_SANDBOX_SELFTEST=1`. It uses `sandbox_check()` to verify sandbox presence and whether `file-write*` is permitted for a given path, without performing an unsafe host write.
 
-- Chromium’s reference for `sandbox_check` “is sandboxed”: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
+- Chromium’s reference for `sandbox_check` “is sandboxed”: https://chromium.googlesource.com/chromium/src/+/HEAD/sandbox/mac/seatbelt.cc
 - A small “sandbox_check validator” example and return semantics (`0 == allowed`): https://karol-mazurek.medium.com/sandbox-validator-e760e5d88617

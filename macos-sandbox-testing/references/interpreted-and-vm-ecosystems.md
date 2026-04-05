@@ -34,6 +34,8 @@ This repo includes a template and an installer:
 - Template: `assets/templates/node-typescript/`
 - Installer: `scripts/node_install.py` (plus `scripts/node_verify.py` / `scripts/node_uninstall.py`)
 
+For step-by-step usage, see `references/node.md`.
+
 It uses:
 
 - an N-API addon that links `SandboxTestingBootstrap.c` (constructor runs at dylib load time), and
@@ -42,7 +44,7 @@ It uses:
 Key caveats:
 
 - This is robust for controlled entrypoints (e.g. `npm test`, `npm run …`) but not for arbitrary Node invocations unless you also control them.
-- Network restrictions can break common tooling (registries, telemetry, update checks). Use `SEATBELT_SANDBOX_NETWORK=allow`/`allowlist` as needed.
+- Network restrictions can break common tooling (registries, telemetry, update checks). Use `SEATBELT_SANDBOX_NETWORK=allow`/`allowlist` as needed (see `references/configuration.md`).
 
 ## Python
 
@@ -54,6 +56,8 @@ This skill provides an installer that instruments a venv so that **running Pytho
 
 - `scripts/python_install.py` / `scripts/python_verify.py` / `scripts/python_uninstall.py`
 - Template notes: `assets/templates/python-venv/`
+
+For step-by-step usage, see `references/python.md`.
 
 Mechanism:
 
@@ -81,6 +85,15 @@ The `sandbox-exec` CLI remains a useful debugging tool, but it is:
 ## About dyld injection tricks
 
 You may see approaches based on `DYLD_INSERT_LIBRARIES` to inject a library that runs a constructor and applies Seatbelt.
+
+### SIP, “restricted” binaries, and why `DYLD_INSERT_LIBRARIES` is unreliable
+
+On modern macOS with System Integrity Protection (SIP), some binaries are marked **restricted**, which causes the dynamic loader to ignore `DYLD_*` environment variables. This applies to many Apple-provided binaries and some developer tooling invocation paths.
+
+Practical impact for this skill:
+
+- Treat `DYLD_INSERT_LIBRARIES` as a **convenience hack**, not a primary integration mechanism.
+- Do not rely on DYLD injection for Apple-signed tools like `xcodebuild` / `xctest`; instead compile/link the bootstrap into the target binary or test bundle you control.
 
 This can be convenient in some local workflows, but it is fragile:
 

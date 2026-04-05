@@ -3,6 +3,7 @@
 This repository contains an **agent skill** for adding a **self-bootstrapping, in-process host-mutation guard** to local dev/test workflows on **modern macOS (15/26+)**, including:
 
 - SwiftPM (`swift run`, `swift test`)
+- Xcode (`xcodebuild test` / Xcode Product → Test)
 - Cargo (`cargo run`, `cargo test`)
 - Go (`go test`)
 - Node/TypeScript (`npm test` / scripted entrypoints)
@@ -17,12 +18,15 @@ It is designed for **development and test environments**, where preventing accid
 
 The underlying bootstrap (`SandboxTestingBootstrap.c`) is language-agnostic. See:
 
+- `macos-sandbox-testing/references/configuration.md`
+- Toolchain quick-starts: `macos-sandbox-testing/references/swiftpm.md`, `macos-sandbox-testing/references/xcode.md`, `macos-sandbox-testing/references/cargo.md`, `macos-sandbox-testing/references/go.md`, `macos-sandbox-testing/references/node.md`, `macos-sandbox-testing/references/python.md`
 - `macos-sandbox-testing/references/other_languages.md`
 - `macos-sandbox-testing/references/interpreted-and-vm-ecosystems.md`
 - `macos-sandbox-testing/assets/templates/rust-cargo/`
 - `macos-sandbox-testing/assets/templates/go/`
 - `macos-sandbox-testing/assets/templates/node-typescript/`
 - `macos-sandbox-testing/assets/templates/python-venv/`
+- `macos-sandbox-testing/assets/templates/xcode/`
 
 ## Install into Codex CLI / skills-compatible agents
 

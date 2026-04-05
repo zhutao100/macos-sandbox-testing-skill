@@ -31,6 +31,14 @@ This validates:
 - no ChatGPT-only citation tokens accidentally committed (e.g. ChatGPT-only inline citation markers)
 - template invariants (presence of required env vars, deny/allow SBPL ordering)
 
+## Maintainer references
+
+These notes are **repo-internal** (not required to apply the `macos-sandbox-testing` skill to a target repo):
+
+- `references/upstream_examples.md` (Chromium + SBPL + dyld interpose examples)
+- `references/network_research.md` (why Seatbelt SBPL network rules were chosen)
+- `references/integration-review-2026.md` (integration tradeoffs and modern macOS constraints)
+
 ## macOS verification (recommended on each meaningful update)
 
 ### 1) Smoke-test against a throwaway SwiftPM package
@@ -103,7 +111,7 @@ This repo relies on behaviors that Apple does not treat as â€œpublic API stableâ
 
 Start from:
 
-- `macos-sandbox-testing/references/upstream_examples.md`
+- `references/upstream_examples.md`
 
 ## Web research checklist (update sources and examples)
 
@@ -124,7 +132,9 @@ Perform broad, up-to-date checks (prefer primary sources):
 When changes are required:
 
 - update the template at `macos-sandbox-testing/assets/templates/SandboxTestingBootstrap.c`
-- update `references/*.md` with corrected links and explanation
+- update docs under:
+  - `macos-sandbox-testing/references/` (skill-user-facing)
+  - `references/` (repo-maintainer research notes, this internal skill)
 - bump `metadata.version` in `macos-sandbox-testing/SKILL.md`
 
 ## Package.swift patching pitfalls (installer/uninstaller)
