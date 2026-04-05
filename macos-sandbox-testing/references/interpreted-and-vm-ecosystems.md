@@ -13,7 +13,9 @@ For interpreted/VM ecosystems, the difficulty is usually **bootstrapping**: you 
 
 ### Option A: Node Permission Model (often simplest for “prevent accidents”)
 
-Node has a built-in Permission Model that can be enabled via Node flags. This can be a practical way to prevent accidental file writes/network access during tests without relying on private macOS APIs.
+Node has a built-in Permission Model (see Node's "Permissions" docs) that can be enabled via flags. This can be a practical way to prevent accidental file writes/network access during tests without relying on private macOS APIs.
+
+Important: treat it as an *accident-prevention* mechanism, not a high-assurance sandbox. The Node project has published multiple security advisories for Permission Model bypasses in recent releases.
 
 Tradeoffs to be explicit about:
 
@@ -27,14 +29,15 @@ When it’s a fit, it tends to be low-friction and cross-platform.
 
 If you want the same kernel-enforced boundary this skill uses for SwiftPM/Cargo, you need native code to call `sandbox_init_with_parameters` in the Node process.
 
-This repo includes a template:
+This repo includes a template and an installer:
 
-- `assets/templates/node-typescript/`
+- Template: `assets/templates/node-typescript/`
+- Installer: `scripts/node_install.py` (plus `scripts/node_verify.py` / `scripts/node_uninstall.py`)
 
 It uses:
 
 - an N-API addon that links `SandboxTestingBootstrap.c` (constructor runs at dylib load time), and
-- a preload (`NODE_OPTIONS=--require ./sandbox/preload.js`) to load the addon before tests.
+- a preload (`NODE_OPTIONS=--require=./sandbox/preload.js`) to load the addon before tests.
 
 Key caveats:
 
@@ -43,25 +46,29 @@ Key caveats:
 
 ## Python
 
-Python can apply Seatbelt “in-process”, but there are fewer robust, no-wrapper hooks than compiled ecosystems.
+Python can apply Seatbelt “in-process”, but robust bootstrapping depends on controlling interpreter startup.
 
-### Option A: `sitecustomize.py` + `ctypes` (works when you control startup)
+### Preferred: venv startup hook + dylib preload
 
-If you control interpreter startup (e.g., `python -m pytest` in CI/dev), a `sitecustomize.py` placed on `sys.path` can run very early and call `sandbox_init_with_parameters` via `ctypes`.
+This skill provides an installer that instruments a venv so that **running Python from that venv** automatically loads a small dylib at interpreter startup.
+
+- `scripts/python_install.py` / `scripts/python_verify.py` / `scripts/python_uninstall.py`
+- Template notes: `assets/templates/python-venv/`
+
+Mechanism:
+
+- Compile `SandboxTestingBootstrap.c` into `macos_sandbox_testing_bootstrap.dylib`.
+- Install a `.pth` startup hook into the venv’s `site-packages` so Python imports a tiny loader module that loads the dylib.
+- Loading the dylib triggers the Mach-O constructor in the bootstrap, applying Seatbelt and starting the tripwire.
 
 Limitations:
 
-- Many invocations bypass site init (`python -S`, embedded interpreters, alternate runtimes).
-- If the sandbox is applied after opening sensitive file descriptors, those already-open descriptors can remain usable.
+- Applies automatically only when running the instrumented venv interpreter (`.venv/bin/python`, `.venv/bin/pytest`, etc.).
+- It can be bypassed by suppressing `site` initialization (`python -S`) or by using a different interpreter/runtime.
 
-### Option B: a small launcher binary
+### Alternative: `sitecustomize.py` + `ctypes`
 
-A common way to regain “no wrapper” semantics is to introduce a compiled launcher that:
-
-1. applies Seatbelt, then
-2. `execve()`s the interpreter with the desired argv/env.
-
-This is simple and robust, but it **is** a wrapper, so it doesn’t meet this skill’s primary “direct invocation” goal unless you can ensure it’s always used.
+Calling `sandbox_init_with_parameters` directly from Python via `ctypes` can work, but tends to drift from the C bootstrap logic and is easier to misconfigure. If you go this route, keep the sandbox apply as early as possible, and be explicit about bypass modes (`-S`, embedded interpreters, alternate runtimes).
 
 ## Why `sandbox-exec` isn’t the main integration story
 

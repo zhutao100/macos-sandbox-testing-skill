@@ -40,7 +40,7 @@ The only integration-specific work is ensuring the bootstrap’s translation uni
 
 ## Concrete workflow templates
 
-This repo now includes templates under `assets/templates/` for Rust and Node/TypeScript.
+This repo includes templates under `assets/templates/` for Rust/Cargo, Go, Node/TypeScript, and Python (venv).
 
 ### Rust / Cargo (recommended)
 
@@ -92,17 +92,47 @@ Operational knobs are the same environment variables described in `SKILL.md`:
 - `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=0|1`
 - `SEATBELT_SANDBOX_DISABLE=1`
 
+### Go (recommended when cgo is acceptable)
+
+Template directory:
+
+- `assets/templates/go/`
+
+Installer workflow (no wrapper):
+
+```bash
+python3 <skill-path>/scripts/go_install.py --project-root <PATH_TO_GO_MODULE>
+python3 <skill-path>/scripts/go_verify.py --project-root <PATH_TO_GO_MODULE>
+```
+
+What the installer does:
+
+- Installs a cgo-enabled helper package under `tools/macos-seatbelt-testing-go/` that compiles and links `SandboxTestingBootstrap.c`.
+- Generates a per-package `_test.go` file that blank-imports the helper package so the bootstrap is linked into **every** `go test` binary.
+
+Caveats:
+
+- Requires `CGO_ENABLED=1` (default on macOS, but some repos intentionally disable it).
+- If your repo has complex build tags, the generated file may need adjustment.
+
 ### Node / TypeScript (workable for `npm` scripts)
 
 Template directory:
 
 - `assets/templates/node-typescript/`
 
+Installer workflow:
+
+```bash
+python3 <skill-path>/scripts/node_install.py --project-root <PATH_TO_NODE_PROJECT>
+python3 <skill-path>/scripts/node_verify.py --project-root <PATH_TO_NODE_PROJECT>
+```
+
 What it provides:
 
 - A minimal N-API addon compiled with `node-gyp` that links `SandboxTestingBootstrap.c`.
 - A preload script (`sandbox/preload.js`) that loads the addon as early as possible.
-- A `package.json` script pattern that sets `NODE_OPTIONS=--require ./sandbox/preload.js` so **`npm test`** runs sandboxed.
+- A `package.json` script pattern that sets `NODE_OPTIONS=--require=./sandbox/preload.js` so **`npm test`** runs sandboxed.
 
 Caveats:
 
@@ -119,22 +149,31 @@ Tradeoffs:
 - It can be bypassed if you don’t control how Node is invoked.
 - It may not cover all early startup behavior.
 
-### Python (optional)
+### Python (venv preload)
 
-If you control the interpreter startup path, you can apply the sandbox from Python itself using `ctypes`.
+If you run tests from a virtual environment (venv), you can apply the sandbox by loading a small dylib at interpreter startup.
 
-This is useful when your Python program is the test runner, but it is not as hard to bypass as embedding the bootstrap in a compiled binary.
+Template directory:
 
-A representative approach is:
+- `assets/templates/python-venv/`
 
-- create a `sitecustomize.py` on `sys.path` that runs very early,
-- call `sandbox_init_with_parameters` via `ctypes`,
-- rely on the same SBPL strategy as this repo.
+Installer workflow:
 
-Limitations to call out:
+```bash
+python3 <skill-path>/scripts/python_install.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
+python3 <skill-path>/scripts/python_verify.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
+```
 
-- Many invocations bypass site initialization (`python -S`, alternate runtimes, embedded interpreters).
-- If the sandbox is applied “late” (after files are opened), already-open file descriptors remain usable.
+This approach:
+
+- compiles `SandboxTestingBootstrap.c` into `macos_sandbox_testing_bootstrap.dylib`, and
+- installs a `.pth` startup hook into the venv’s `site-packages` so the dylib loads automatically.
+
+Limitations:
+
+- Applies automatically only when using the instrumented venv interpreter.
+- Can be bypassed by suppressing `site` initialization (`python -S`) or using a different interpreter.
+
 
 ## “sandbox-exec” wrappers are not the goal here
 

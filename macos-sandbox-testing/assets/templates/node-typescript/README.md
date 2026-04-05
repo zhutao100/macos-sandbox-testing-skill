@@ -21,7 +21,7 @@ node-gyp rebuild
 3. Run your tests with the preload:
 
 ```bash
-SEATBELT_SANDBOX_SELFTEST=1 NODE_OPTIONS=--require ./sandbox/preload.js npm test
+SEATBELT_SANDBOX_SELFTEST=1 NODE_OPTIONS=--require=./sandbox/preload.js npm test
 ```
 
 ## Notes / caveats
