@@ -10,6 +10,16 @@ From the SwiftPM package root (contains `Package.swift`):
 python3 <skill-path>/scripts/swiftpm_install.py --package-root .
 ```
 
+To limit installation:
+
+```bash
+# Only `swift test` (recommended starter)
+python3 <skill-path>/scripts/swiftpm_install.py --package-root . --only test
+
+# Only `swift run` / executable targets
+python3 <skill-path>/scripts/swiftpm_install.py --package-root . --only executable
+```
+
 ## Verify (recommended)
 
 ```bash
