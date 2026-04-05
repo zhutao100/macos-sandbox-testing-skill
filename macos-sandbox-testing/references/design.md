@@ -2,13 +2,18 @@
 
 ## Problem statement
 
-SwiftPM development workflows (`swift run`, `swift test`) execute native code on the host. In real projects, it is easy for tests or dev runs to accidentally:
+Local development workflows like:
+
+- SwiftPM (`swift run`, `swift test`)
+- Cargo (`cargo run`, `cargo test`)
+
+execute native code on the host. In real projects, it is easy for tests or dev runs to accidentally:
 
 - write into `$HOME` / `~/Library/*` (caches, preferences, support)
 - mutate shared developer directories (e.g. `~/Developer`, mounted volumes)
 - overwrite important files via path bugs
 
-A wrapper is not reliable in agentic workflows: the safety boundary must activate even when tools invoke `swift run` / `swift test` directly.
+A wrapper is not reliable in agentic workflows: the safety boundary must activate even when tools invoke `swift test` / `cargo test` directly.
 
 ## Why this approach
 
@@ -18,7 +23,7 @@ The low-level macOS sandbox (“Seatbelt”, via the `sandbox(7)` APIs) cannot b
 
 - https://bdash.net.nz/posts/sandboxing-on-macos/
 
-This fits the SwiftPM constraint: we compile the guard into targets so it runs for direct invocations.
+This fits the core constraint: we compile the guard into the executable/test runner so it runs for direct invocations.
 
 ### 2) Use `sandbox_init_with_parameters` with a parameterized SBPL profile
 
@@ -45,7 +50,7 @@ CoreFoundation consults `CFFIXED_USER_HOME` (and falls back to `HOME`) when comp
 
 The injected bootstrap sets `HOME`, `CFFIXED_USER_HOME`, and `TMPDIR` early, and creates a repo-local sandbox root under:
 
-- `<workspace>/.build/swiftpm-sandbox-testing/<run-id>/`
+- `<workspace>/.build/macos-sandbox-testing/<run-id>/`
 
 ### 4) Add a tripwire logger for actionable attribution
 
@@ -64,7 +69,7 @@ Notes:
 
 ### 5) Optional IP network guard + network tripwire
 
-In addition to filesystem write-guarding, this skill can **block and log unexpected IP networking** from `swift run` / `swift test` targets.
+In addition to filesystem write-guarding, this skill can **block and log unexpected IP networking** from dev/test runs.
 
 **Kernel enforcement (Seatbelt / SBPL):**
 
@@ -94,14 +99,14 @@ Seatbelt denials are often visible via unified logging (`sandboxd`), but a repo-
 - `connect()` (logged as `net.connect`)
 - `bind()` (logged as `net.bind`)
 
-and denies disallowed destinations early with `EPERM` (unless `SWIFTPM_SANDBOX_MODE=report-only`).
+and denies disallowed destinations early with `EPERM` (unless `SEATBELT_SANDBOX_MODE=report-only`).
 
 **Practical design choices:**
 
 - The default network mode is **deny IP networking** (outbound + bind/listen), while leaving **AF_UNIX** local IPC unaffected. Broad rules like `(deny network*)` can break programs that rely on Unix-domain sockets for local IPC.
 - “localhost-only” policies can be sensitive to IPv6 dual-stack behavior (for example, IPv4-mapped IPv6 addresses like `::ffff:127.0.0.1`). Prefer explicit loopback binds (`127.0.0.1` / `::1`) when possible.
 
-Configuration is controlled via `SWIFTPM_SANDBOX_NETWORK` and `SWIFTPM_SANDBOX_NETWORK_ALLOWLIST` (see `SKILL.md`).
+Configuration is controlled via `SEATBELT_SANDBOX_NETWORK` and `SEATBELT_SANDBOX_NETWORK_ALLOWLIST` (see `SKILL.md`).
 
 
 ## Threat model and non-goals
@@ -118,7 +123,7 @@ This skill uses a **blacklist-style** profile:
 - a broad `(deny file-write*)`, and finally
 - an allowlist `(allow file-write* …)` for the repo workspace and the repo-local sandbox root
 
-By default, the allowlist also includes common system temp locations (notably `/var/folders/.../T`) because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file there as part of `swift test` on macOS. Set `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=0` to enable the strict “workspace-only writes” profile.
+By default, the allowlist also includes common system temp locations (notably `/var/folders/.../T`) because SwiftPM’s XCTest runner (`swiftpm-xctest-helper`) writes a temp output file there as part of `swift test` on macOS. Set `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=0` to enable the strict “workspace-only writes” profile.
 
 Empirically, **rule ordering matters**. A common working pattern is “deny, then allow exceptions” (i.e., allow rules placed after broad denies). See this write-up with concrete `sandbox-exec` examples:
 
@@ -128,7 +133,7 @@ Empirically, **rule ordering matters**. A common working pattern is “deny, the
 
 ## Safe verification (`sandbox_check`)
 
-The bootstrap supports `SWIFTPM_SANDBOX_SELFTEST=1`. It uses `sandbox_check()` to verify sandbox presence and whether `file-write*` is permitted for a given path, without performing an unsafe host write.
+The bootstrap supports `SEATBELT_SANDBOX_SELFTEST=1`. It uses `sandbox_check()` to verify sandbox presence and whether `file-write*` is permitted for a given path, without performing an unsafe host write.
 
 - Chromium’s reference for `sandbox_check` “is sandboxed”: https://chromium.googlesource.com/chromium/src/+/lkgr/sandbox/mac/seatbelt.cc
 - A small “sandbox_check validator” example and return semantics (`0 == allowed`): https://karol-mazurek.medium.com/sandbox-validator-e760e5d88617

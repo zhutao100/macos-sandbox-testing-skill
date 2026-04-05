@@ -8,15 +8,15 @@ This repository is a **single-skill bundle**. Changes should preserve:
 
 ## Repository layout
 
-- `swiftpm-sandbox-testing/`
+- `macos-sandbox-testing/`
   - `SKILL.md`: primary instructions and entry points.
   - `scripts/`: install/uninstall/verify utilities.
-  - `assets/templates/`: source templates injected into target SwiftPM repos.
+  - `assets/templates/`: source templates injected into target repos (SwiftPM, Cargo, etc.).
   - `references/`: longer background, rationale, and debugging notes.
 
 ## When editing the injected bootstrap code
 
-The injected template (`assets/templates/SandboxTestingBootstrap.c`) is intended to be copied into **each SwiftPM executable and test target**. Keep it:
+The injected template (`assets/templates/SandboxTestingBootstrap.c`) is intended to be compiled/linked into **each supported executable and test runner** (SwiftPM, Cargo, etc.). Keep it:
 
 - **network-conscious** (ensure network restrictions remain coarse-but-reliable on modern macOS, and don’t accidentally break AF_UNIX IPC unless explicitly intended)
 
@@ -30,16 +30,18 @@ The injected template (`assets/templates/SandboxTestingBootstrap.c`) is intended
 - Validate the skill bundle is structurally correct:
 
 ```bash
-python3 swiftpm-sandbox-testing/scripts/validate_skill_bundle.py --skill-dir swiftpm-sandbox-testing
+python3 macos-sandbox-testing/scripts/validate_skill_bundle.py --skill-dir macos-sandbox-testing
 ```
 
 - Run formatting checks (if any are added later):
 
 ```bash
-python3 -m compileall swiftpm-sandbox-testing/scripts
+python3 -m compileall macos-sandbox-testing/scripts
 ```
 
-## Smoke test against a sample SwiftPM package (macOS only)
+## Smoke tests against throwaway packages (macOS only)
+
+### SwiftPM
 
 On a macOS machine with Xcode + SwiftPM:
 
@@ -52,27 +54,42 @@ swift package init --type executable
 swift test
 ```
 
+Note: `swift package init --type executable` does not always create a test target on modern SwiftPM toolchains. If `swift test` has nothing to run, create a minimal test target or use the more explicit smoke test in `.agents/skills/update-macos-sandbox-testing-skill/SKILL.md`.
+
 2. Install the guard into it:
 
 ```bash
-python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/install.py --package-root .
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/swiftpm_install.py --package-root .
 ```
 
 3. Run verification:
 
 ```bash
-python3 <path-to-this-repo>/swiftpm-sandbox-testing/scripts/verify.py --package-root .
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/swiftpm_verify.py --package-root .
 ```
 
 If verification fails due to a denied operation required by system frameworks, use the debugging guidance in:
 
-- `swiftpm-sandbox-testing/references/debugging.md`
+- `macos-sandbox-testing/references/debugging.md`
 
+### Cargo
+
+On a macOS machine with Rust/Cargo:
+
+```bash
+rm -rf /tmp/cargo-sandbox-smoke
+cargo new /tmp/cargo-sandbox-smoke
+cd /tmp/cargo-sandbox-smoke
+cargo test
+
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/cargo_install.py --project-root .
+python3 <path-to-this-repo>/macos-sandbox-testing/scripts/cargo_verify.py --project-root .
+```
 
 ## Internal maintenance skill
 
 For repo-internal upkeep, use:
 
-- `.agents/skills/update-swiftpm-sandbox-testing-skill/SKILL.md`
+- `.agents/skills/update-macos-sandbox-testing-skill/SKILL.md`
 
 This internal skill provides a checklist for refreshing web references, re-validating SBPL/Seatbelt behaviors, and ensuring this repo remains compliant with skill standards.

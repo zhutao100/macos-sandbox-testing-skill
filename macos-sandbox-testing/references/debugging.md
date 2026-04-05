@@ -2,26 +2,45 @@
 
 ## 1) Confirm the guard is installed
 
+### SwiftPM (Swift)
+
 In the target SwiftPM package:
 
 - `Sources/SwiftPMSandboxTestingBootstrap*/` should exist (bootstrap C target; name may be suffixed if there was a conflict).
-  - It should contain `.swiftpm-sandbox-testing-installed` (marker file).
+  - It should contain `.macos-sandbox-testing-installed` (marker file).
 - Each selected executable/test target directory should contain `SwiftPMSandboxTestingAnchor.swift` (force-link anchor).
-- `swift test` should create `.build/swiftpm-sandbox-testing/<run-id>/…`.
+- `swift test` should create `.build/macos-sandbox-testing/<run-id>/…`.
 
 If you used the bundled verifier:
 
 ```bash
-python3 <skill-path>/scripts/verify.py --package-root <repo>
+python3 <skill-path>/scripts/swiftpm_verify.py --package-root <repo>
+```
+
+### Rust / Cargo
+
+In the target Cargo workspace:
+
+- `tools/macos-seatbelt-testing/` should exist and contain `.macos-sandbox-testing-installed` (marker file).
+- `.cargo/config.toml` should contain a marked `SEATBELT_SANDBOX_WORKSPACE_ROOT` entry.
+- Patched `Cargo.toml` files should include a marked `macos-seatbelt-testing = { path = ... }` dependency under a macOS-only target deps table.
+- Patched Rust sources should contain the anchor block:
+  - `// macos-sandbox-testing: begin` … `// macos-sandbox-testing: end`
+- `cargo test` should create `.build/macos-sandbox-testing/<run-id>/…`.
+
+If you used the bundled verifier:
+
+```bash
+python3 <skill-path>/scripts/cargo_verify.py --project-root <repo>
 ```
 
 ## 2) Find the sandbox run directory
 
 Each run produces:
 
-- `.build/swiftpm-sandbox-testing/<run-id>/home`
-- `.build/swiftpm-sandbox-testing/<run-id>/tmp`
-- `.build/swiftpm-sandbox-testing/<run-id>/logs/events.jsonl`
+- `.build/macos-sandbox-testing/<run-id>/home`
+- `.build/macos-sandbox-testing/<run-id>/tmp`
+- `.build/macos-sandbox-testing/<run-id>/logs/events.jsonl`
 
 `events.jsonl` contains one JSON object per logged event (bootstrap marker plus any intercepted mutations).
 
@@ -30,7 +49,7 @@ Notes:
 - The tripwire logger records **out-of-bounds** mutation attempts (and always emits a `bootstrap` marker). If your run never attempts an out-of-bounds write, the log may contain only the `bootstrap` event.
 - Seatbelt applies to child processes, but the tripwire logger is **in-process**: helper binaries (e.g. SwiftPM’s `swiftpm-xctest-helper`) will not emit `events.jsonl` unless they also include the injected bootstrap code.
 
-## 3) If `swift test` fails early
+## 3) If tests fail early
 
 A tight write-boundary can break framework behaviors. Typical symptoms:
 
@@ -40,27 +59,30 @@ A tight write-boundary can break framework behaviors. Typical symptoms:
 Mitigations (in increasing order of looseness):
 
 1. Keep Seatbelt strict, but collect more evidence:
-   - `SWIFTPM_SANDBOX_LOG_LEVEL=verbose`
-   - and (optionally) `SWIFTPM_SANDBOX_SELFTEST=1`
+   - `SEATBELT_SANDBOX_LOG_LEVEL=verbose`
+   - and (optionally) `SEATBELT_SANDBOX_SELFTEST=1`
 
 2. Use `redirect` mode so common mutation calls are rewritten into the repo-local sandbox root (still denied by Seatbelt if not rewritten):
 
 ```bash
-SWIFTPM_SANDBOX_MODE=redirect swift test
+SEATBELT_SANDBOX_MODE=redirect swift test
+SEATBELT_SANDBOX_MODE=redirect cargo test
 ```
 
 3. Allow common system temp locations (default; required for SwiftPM XCTest on macOS):
 
 ```bash
-SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=1 swift test
+SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=1 swift test
+SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=1 cargo test
 ```
 
-If you need the strict “workspace-only writes” profile, set `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP=0` (expect some `swift test` invocations to fail due to SwiftPM runner temp writes).
+If you need the strict “workspace-only writes” profile, set `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=0` (expect some `swift test` invocations to fail due to SwiftPM runner temp writes).
 
 4. If you are bringing up the sandbox and need the process to continue even if applying Seatbelt fails (not recommended), allow running unenforced:
 
 ```bash
-SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1 swift test
+SEATBELT_SANDBOX_ALLOW_UNENFORCED=1 swift test
+SEATBELT_SANDBOX_ALLOW_UNENFORCED=1 cargo test
 ```
 
 ## 4) System-level sandbox logs (unified logging)
@@ -87,7 +109,8 @@ By default, the injected bootstrap blocks **IP networking** (outbound connection
 Quick check:
 
 ```bash
-SWIFTPM_SANDBOX_NETWORK=deny swift test
+SEATBELT_SANDBOX_NETWORK=deny swift test
+SEATBELT_SANDBOX_NETWORK=deny cargo test
 ```
 
 If the test target attempts an outbound connection, you should see:
@@ -100,7 +123,8 @@ If the test target attempts an outbound connection, you should see:
 If tests need a local database or test server:
 
 ```bash
-SWIFTPM_SANDBOX_NETWORK=localhost swift test
+SEATBELT_SANDBOX_NETWORK=localhost swift test
+SEATBELT_SANDBOX_NETWORK=localhost cargo test
 ```
 
 Notes:
@@ -112,9 +136,13 @@ Notes:
 A common pattern is to keep the sandbox “no network”, but allow only a loopback proxy port:
 
 ```bash
-SWIFTPM_SANDBOX_NETWORK=allowlist \
-SWIFTPM_SANDBOX_NETWORK_ALLOWLIST="localhost:43128" \
+SEATBELT_SANDBOX_NETWORK=allowlist \
+SEATBELT_SANDBOX_NETWORK_ALLOWLIST="localhost:43128" \
 swift test
+
+SEATBELT_SANDBOX_NETWORK=allowlist \
+SEATBELT_SANDBOX_NETWORK_ALLOWLIST="localhost:43128" \
+cargo test
 ```
 
 (Seatbelt allowlists are intentionally coarse; it can’t directly match arbitrary domains.)
@@ -145,7 +173,7 @@ For triage:
 1. Identify the first denied mutation (often the root cause).
 2. Decide if that mutation should:
    - be fixed in code (preferable), or
-   - be redirected into the sandbox root (`SWIFTPM_SANDBOX_MODE=redirect`), or
+   - be redirected into the sandbox root (`SEATBELT_SANDBOX_MODE=redirect`), or
    - be explicitly allowed by policy (last resort).
 
 ## 6) Common failure modes
@@ -158,21 +186,21 @@ This can happen if:
 - the profile fails to compile, or
 - Apple changes behavior around the deprecated APIs.
 
-The bootstrap fails closed by default (exit code 197) because continuing without a sandbox defeats the objective. Use `SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1` only during bring-up.
+The bootstrap fails closed by default (exit code 197) because continuing without a sandbox defeats the objective. Use `SEATBELT_SANDBOX_ALLOW_UNENFORCED=1` only during bring-up.
 
 ### B) “Writes still appear to succeed outside the workspace”
 
 First, ensure you are not running with the explicit escape hatches:
 
-- `SWIFTPM_SANDBOX_DISABLE=1`
-- `SWIFTPM_SANDBOX_ALLOW_UNENFORCED=1`
+- `SEATBELT_SANDBOX_DISABLE=1`
+- `SEATBELT_SANDBOX_ALLOW_UNENFORCED=1`
 
-Note: `SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP` defaults to `1` for SwiftPM XCTest compatibility; set it to `0` if you need the strict “workspace-only writes” profile.
+Note: `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP` defaults to `1` for SwiftPM XCTest compatibility; set it to `0` if you need the strict “workspace-only writes” profile.
 
 Then use self-test:
 
 ```bash
-SWIFTPM_SANDBOX_SELFTEST=1 swift test
+SEATBELT_SANDBOX_SELFTEST=1 swift test
 ```
 
 Self-test uses `sandbox_check()` to validate sandbox presence and whether `file-write*` is allowed for the original HOME vs the sandbox root.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Repo checks for swiftpm-sandbox-testing-skill.
+Repo checks for macos-sandbox-testing-skill.
 
 Designed to be:
 - dependency-free (stdlib only)
@@ -9,6 +9,7 @@ Designed to be:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -17,13 +18,20 @@ from pathlib import Path
 
 
 def _repo_root() -> Path:
-    # .../.agents/skills/update-swiftpm-sandbox-testing-skill/scripts/run_repo_checks.py
+    # .../.agents/skills/update-macos-sandbox-testing-skill/scripts/run_repo_checks.py
     # -> repo root is 4 parents up.
     return Path(__file__).resolve().parents[4]
 
 
-def _run(cmd: list[str], *, cwd: Path) -> None:
-    proc = subprocess.run(cmd, cwd=str(cwd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             "command failed\n"
@@ -55,14 +63,14 @@ def _check_template_invariants(template: Path) -> None:
     txt = template.read_text(encoding="utf-8")
 
     required_env = [
-        "SWIFTPM_SANDBOX_ALLOW_UNENFORCED",
-        "SWIFTPM_SANDBOX_ALLOW_SYSTEM_TMP",
-        "SWIFTPM_SANDBOX_DISABLE",
-        "SWIFTPM_SANDBOX_NETWORK",
-        "SWIFTPM_SANDBOX_NETWORK_ALLOWLIST",
-        "SWIFTPM_SANDBOX_TRIPWIRE",
-        "SWIFTPM_SANDBOX_MODE",
-        "SWIFTPM_SANDBOX_SELFTEST",
+        "SEATBELT_SANDBOX_ALLOW_UNENFORCED",
+        "SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP",
+        "SEATBELT_SANDBOX_DISABLE",
+        "SEATBELT_SANDBOX_NETWORK",
+        "SEATBELT_SANDBOX_NETWORK_ALLOWLIST",
+        "SEATBELT_SANDBOX_TRIPWIRE",
+        "SEATBELT_SANDBOX_MODE",
+        "SEATBELT_SANDBOX_SELFTEST",
     ]
     missing = [e for e in required_env if e not in txt]
     if missing:
@@ -100,14 +108,40 @@ def _check_template_compiles(template: Path, *, cwd: Path) -> None:
     _run([clang, "-fsyntax-only", "-std=c11", "-Wall", "-Wextra", "-Werror", str(template)], cwd=cwd)
 
 
+def _check_template_variants_match(core: Path, variants: list[Path]) -> None:
+    core_bytes = core.read_bytes()
+    mismatched: list[Path] = []
+    for p in variants:
+        if not p.exists():
+            raise RuntimeError(f"Missing template variant: {p}")
+        if p.read_bytes() != core_bytes:
+            mismatched.append(p)
+    if mismatched:
+        joined = "\n".join(f"- {p}" for p in mismatched)
+        raise RuntimeError("Template variants differ from the core template:\n" + joined)
+
+
 def main() -> None:
     root = _repo_root()
+    pycache_prefix = str(Path("/tmp") / "macos-sandbox-testing-skill" / "pycache")
+    python_env = {**os.environ, "PYTHONPYCACHEPREFIX": pycache_prefix}
 
-    main_skill = root / "swiftpm-sandbox-testing"
-    internal_skill = root / ".agents" / "skills" / "update-swiftpm-sandbox-testing-skill"
+    main_skill = root / "macos-sandbox-testing"
+    internal_skill = root / ".agents" / "skills" / "update-macos-sandbox-testing-skill"
 
-    validator = root / "swiftpm-sandbox-testing" / "scripts" / "validate_skill_bundle.py"
-    template = root / "swiftpm-sandbox-testing" / "assets" / "templates" / "SandboxTestingBootstrap.c"
+    validator = root / "macos-sandbox-testing" / "scripts" / "validate_skill_bundle.py"
+    template = root / "macos-sandbox-testing" / "assets" / "templates" / "SandboxTestingBootstrap.c"
+    template_variants = [
+        root / "macos-sandbox-testing" / "assets" / "templates" / "rust-cargo" / "SandboxTestingBootstrap.c",
+        root
+        / "macos-sandbox-testing"
+        / "assets"
+        / "templates"
+        / "node-typescript"
+        / "sandbox"
+        / "SandboxTestingBootstrap.c",
+        root / "macos-sandbox-testing" / "assets" / "templates" / "swiftpm" / "SandboxTestingBootstrap.c",
+    ]
 
     if not validator.exists():
         raise RuntimeError(f"Missing validator: {validator}")
@@ -119,8 +153,12 @@ def main() -> None:
     _run([sys.executable, str(validator), "--skill-dir", str(internal_skill)], cwd=root)
 
     print("2) Python compile checks…")
-    _run([sys.executable, "-m", "compileall", str(root / "swiftpm-sandbox-testing" / "scripts")], cwd=root)
-    _run([sys.executable, "-m", "compileall", str(internal_skill / "scripts")], cwd=root)
+    _run(
+        [sys.executable, "-m", "compileall", str(root / "macos-sandbox-testing" / "scripts")],
+        cwd=root,
+        env=python_env,
+    )
+    _run([sys.executable, "-m", "compileall", str(internal_skill / "scripts")], cwd=root, env=python_env)
 
     print("3) Citation-token check…")
     _check_no_chatgpt_citations(root)
@@ -128,6 +166,9 @@ def main() -> None:
     print("4) Template invariants…")
     _check_template_invariants(template)
     _check_template_compiles(template, cwd=root)
+
+    print("5) Template variant sync…")
+    _check_template_variants_match(template, template_variants)
 
     print("OK: repo checks passed")
 

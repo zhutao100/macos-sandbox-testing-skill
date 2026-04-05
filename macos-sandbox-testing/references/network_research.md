@@ -1,6 +1,6 @@
 # Network IO sandboxing research (macOS 15/26+)
 
-This note summarizes viable approaches to **preventing and logging unexpected network activity** from `swift run` / `swift test` executables, with a bias toward solutions that:
+This note summarizes viable approaches to **preventing and logging unexpected network activity** from local dev/test runs (e.g. `swift test`, `cargo test`), with a bias toward solutions that:
 
 - are **in-process** (cannot be bypassed by forgetting a wrapper),
 - apply to **child processes** (inheritance),
@@ -70,7 +70,7 @@ Network extension based filtering (per-process, domain-aware) can be powerful, b
 - entitlements,
 - installation/approval by the user/admin.
 
-This is incompatible with the skill’s goal of “drop-in dev/test safety” for arbitrary SwiftPM packages.
+This is incompatible with the skill’s goal of “drop-in dev/test safety” for arbitrary repos and toolchains.
 
 ### EndpointSecurity for network event monitoring
 
@@ -85,7 +85,7 @@ Again, unsuitable for a drop-in skill repo.
 
 These can control outbound connections, but they are **external** to the process:
 
-- not “safe-by-construction” for `swift run` / `swift test`,
+- not “safe-by-construction” for direct dev/test invocations,
 - often interactive, and
 - not consistently automatable across developer machines.
 

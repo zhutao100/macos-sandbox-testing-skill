@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install swiftpm-sandbox-testing into a SwiftPM package.
+"""Install macos-sandbox-testing into a SwiftPM package.
 
 SwiftPM targets do not support *mixed* Swift + C sources in a single target.
 So instead of dropping `SandboxTestingBootstrap.c` directly into each Swift
@@ -7,13 +7,13 @@ target, this installer adds:
 
 1) A dedicated C target (default: `SwiftPMSandboxTestingBootstrap`) under `Sources/`.
    - Contains the Seatbelt + tripwire bootstrap (`SandboxTestingBootstrap.c`).
-   - Exposes a tiny `swiftpmst_force_link()` symbol so Swift can force-link the
+   - Exposes a tiny `msst_force_link()` symbol so Swift can force-link the
      translation unit (constructors only run if the object file is linked in).
    - Writes a marker file so `uninstall.py` can safely remove the directory.
 
 2) A tiny Swift anchor file (`SwiftPMSandboxTestingAnchor.swift`) into each
    selected executable/test target, which imports the bootstrap module and
-   references `swiftpmst_force_link()`.
+   references `msst_force_link()`.
 
 The installer patches `Package.swift` to register the new bootstrap target and
 add it as a dependency for the selected targets.
@@ -42,10 +42,10 @@ class TargetInfo:
 _BOOTSTRAP_TARGET_DEFAULT_NAME = "SwiftPMSandboxTestingBootstrap"
 _BOOTSTRAP_C_NAME = "SandboxTestingBootstrap.c"
 _BOOTSTRAP_H_NAME = "SwiftPMSandboxTestingBootstrap.h"
-_BOOTSTRAP_MARKER_NAME = ".swiftpm-sandbox-testing-installed"
+_BOOTSTRAP_MARKER_NAME = ".macos-sandbox-testing-installed"
 _ANCHOR_SWIFT_NAME = "SwiftPMSandboxTestingAnchor.swift"
-_MANIFEST_BLOCK_BEGIN = "// swiftpm-sandbox-testing: begin"
-_MANIFEST_BLOCK_END = "// swiftpm-sandbox-testing: end"
+_MANIFEST_BLOCK_BEGIN = "// macos-sandbox-testing: begin"
+_MANIFEST_BLOCK_END = "// macos-sandbox-testing: end"
 
 
 def _run(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -326,8 +326,8 @@ def _ensure_dependency_in_target_call(call_text: str, *, bootstrap_target_name: 
     if f"\"{bootstrap_target_name}\"" in call_text:
         return call_text, False
 
-    dep_marker_block = "/* swiftpm-sandbox-testing */"
-    dep_line_suffix = " // swiftpm-sandbox-testing"
+    dep_marker_block = "/* macos-sandbox-testing */"
+    dep_line_suffix = " // macos-sandbox-testing"
 
     m = re.search(r"\bdependencies\s*:\s*\[", call_text)
     if m:
@@ -422,7 +422,7 @@ def _install_bootstrap_target(
     return [
         _write_file(c_dst, contents=c_template, force=force, dry_run=dry_run),
         _write_file(h_dst, contents=h_template, force=force, dry_run=dry_run),
-        _write_file(marker_dst, contents="swiftpm-sandbox-testing installed\n", force=False, dry_run=dry_run),
+        _write_file(marker_dst, contents="macos-sandbox-testing installed\n", force=False, dry_run=dry_run),
     ]
 
 
@@ -443,7 +443,7 @@ def _install_anchor_into_target(target: TargetInfo, *, template: str, force: boo
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Install swiftpm-sandbox-testing bootstrap into a SwiftPM package")
+    ap = argparse.ArgumentParser(description="Install macos-sandbox-testing bootstrap into a SwiftPM package")
     ap.add_argument("--package-root", required=True, type=Path)
     ap.add_argument("--force", action="store_true", help="Overwrite previously installed bootstrap sources/anchors")
     ap.add_argument("--dry-run", action="store_true")
@@ -463,8 +463,8 @@ def main() -> None:
 
     templates_dir = Path(__file__).resolve().parent.parent / "assets" / "templates"
     c_template = (templates_dir / _BOOTSTRAP_C_NAME).read_text(encoding="utf-8")
-    h_template = (templates_dir / _BOOTSTRAP_H_NAME).read_text(encoding="utf-8")
-    anchor_template = (templates_dir / _ANCHOR_SWIFT_NAME).read_text(encoding="utf-8")
+    h_template = (templates_dir / "swiftpm" / _BOOTSTRAP_H_NAME).read_text(encoding="utf-8")
+    anchor_template = (templates_dir / "swiftpm" / _ANCHOR_SWIFT_NAME).read_text(encoding="utf-8")
 
     manifest_path = package_root / "Package.swift"
     manifest = manifest_path.read_text(encoding="utf-8")
@@ -519,7 +519,7 @@ def main() -> None:
     if args.dry_run:
         return
 
-    print("\nNext steps:\n- git status\n- swift test (optionally with SWIFTPM_SANDBOX_SELFTEST=1)\n")
+    print("\nNext steps:\n- git status\n- swift test (optionally with SEATBELT_SANDBOX_SELFTEST=1)\n")
 
 
 if __name__ == "__main__":

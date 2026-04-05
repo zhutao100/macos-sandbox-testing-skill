@@ -1,0 +1,14 @@
+[package]
+name = "macos-seatbelt-testing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+# A regular Rust library. The linked C bootstrap applies the sandbox at load time.
+crate-type = ["rlib"]
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"
