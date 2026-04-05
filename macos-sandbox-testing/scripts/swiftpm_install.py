@@ -309,14 +309,17 @@ def _ensure_bootstrap_target_decl(manifest: str, *, bootstrap_target_name: str) 
             manifest = manifest[:last_end] + "," + manifest[last_end:]
             close_idx += 1
 
+    targets_indent = _indent_of_line(manifest, open_idx)
+    element_indent = _indent_of_line(manifest, last_call[0]) if last_call else (targets_indent + " " * 2)
+    field_indent = element_indent + " " * 2
     insertion = (
-        f"        {_MANIFEST_BLOCK_BEGIN}\n"
-        "        .target(\n"
-        f"            name: \"{bootstrap_target_name}\",\n"
-        f"            path: \"{(Path('Sources') / bootstrap_target_name).as_posix()}\",\n"
-        "            publicHeadersPath: \"include\"\n"
-        "        ),\n"
-        f"        {_MANIFEST_BLOCK_END}\n"
+        f"{element_indent}{_MANIFEST_BLOCK_BEGIN}\n"
+        f"{element_indent}.target(\n"
+        f"{field_indent}name: \"{bootstrap_target_name}\",\n"
+        f"{field_indent}path: \"{(Path('Sources') / bootstrap_target_name).as_posix()}\",\n"
+        f"{field_indent}publicHeadersPath: \"include\"\n"
+        f"{element_indent}),\n"
+        f"{element_indent}{_MANIFEST_BLOCK_END}\n"
     )
     insert_at = manifest.rfind("\n", 0, close_idx) + 1
     return manifest[:insert_at] + insertion + manifest[insert_at:], True
@@ -326,7 +329,6 @@ def _ensure_dependency_in_target_call(call_text: str, *, bootstrap_target_name: 
     if f"\"{bootstrap_target_name}\"" in call_text:
         return call_text, False
 
-    dep_marker_block = "/* macos-sandbox-testing */"
     dep_line_suffix = " // macos-sandbox-testing"
 
     m = re.search(r"\bdependencies\s*:\s*\[", call_text)
@@ -341,12 +343,18 @@ def _ensure_dependency_in_target_call(call_text: str, *, bootstrap_target_name: 
             insert = f"\n{item_indent}\"{bootstrap_target_name}\",{dep_line_suffix}"
             return call_text[: open_idx + 1] + insert + content + call_text[close_idx:], True
 
-        # One-line dependencies array: keep it one-line and use a block comment marker.
+        # One-line dependencies array: rewrite to multi-line (cleaner diffs, avoids awkward block comments).
+        deps_indent = _indent_of_line(call_text, m.start())
+        item_indent = deps_indent + " " * 4
         trimmed = content.strip()
         if trimmed:
-            new_content = f" \"{bootstrap_target_name}\", {dep_marker_block} {trimmed} "
+            new_content = (
+                f"\n{item_indent}\"{bootstrap_target_name}\",{dep_line_suffix}\n"
+                f"{item_indent}{trimmed}\n"
+                f"{deps_indent}"
+            )
         else:
-            new_content = f" \"{bootstrap_target_name}\" {dep_marker_block} "
+            new_content = f"\n{item_indent}\"{bootstrap_target_name}\",{dep_line_suffix}\n{deps_indent}"
         return call_text[: open_idx + 1] + new_content + call_text[close_idx:], True
 
     # No dependencies argument: insert after the `name:` line.
