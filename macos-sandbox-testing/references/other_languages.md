@@ -1,8 +1,6 @@
 # Porting the in-process Seatbelt sandbox/tripwire to other languages (macOS 15/26+)
 
-This repo’s core mechanism (the `SandboxTestingBootstrap.c` template) is **not Swift-specific**.
-
-SwiftPM is a primary integration target because it is common and has a strong need for “no-wrapper” safety on `swift run` / `swift test`. Cargo/Rust is also a good fit. The same pattern can be reused in other language ecosystems.
+This repo’s core mechanism (the `SandboxTestingBootstrap.c` template) is **language-agnostic**.
 
 ## Mechanism recap (what the bootstrap actually does)
 
@@ -25,6 +23,7 @@ SwiftPM adds one extra wrinkle: because Clang targets are usually linked as stat
 |---|---|---:|---|
 | **Rust / Cargo** | Link `SandboxTestingBootstrap.c` into every bin/test harness; ensure the object is **force-loaded** | High | Practical and clean. See template below. |
 | **C/C++/ObjC** | Compile and link the bootstrap translation unit into your executable/test binary | High | Use `-Wl,-force_load` when linking via static libs. |
+| **Xcode (Swift/C/C++/ObjC)** | Add `SandboxTestingBootstrap.c` to the Xcode target(s) you want sandboxed | High | See `references/xcode.md` for guidance on test hosts and scheme env vars. |
 | **Go** | cgo linking of the bootstrap + Go `init()` to ensure linkage | Medium | Works, but cgo introduces toolchain constraints. |
 | **Node / TypeScript** | Load a native addon very early (preload) that links the bootstrap | Medium | Works for `npm test`/scripts. “Direct `node`” can bypass unless you control entrypoints. |
 | **Python** | `sitecustomize.py` + `ctypes` to call `sandbox_init_with_parameters` early | Low–Medium | Can be bypassed with `python -S`, different site behavior, or alt runtimes. |
@@ -40,139 +39,25 @@ The only integration-specific work is ensuring the bootstrap’s translation uni
 
 ## Concrete workflow templates
 
-This repo includes templates under `assets/templates/` for Rust/Cargo, Go, Node/TypeScript, and Python (venv).
+This repo includes ready-to-install templates and scripts for common ecosystems:
 
-### Rust / Cargo (recommended)
+- SwiftPM: `references/swiftpm.md` and `assets/templates/swiftpm/`
+- Xcode: `references/xcode.md`, `scripts/xcode_prepare.py`, and `assets/templates/xcode/`
+- Cargo: `references/cargo.md` and `assets/templates/rust-cargo/`
+- Go: `references/go.md` and `assets/templates/go/`
+- Node/TypeScript: `references/node.md` and `assets/templates/node-typescript/`
+- Python (venv): `references/python.md` and `assets/templates/python-venv/`
 
-Template directory:
+## Porting checklist (new ecosystem)
 
-- `assets/templates/rust-cargo/`
+When adding a new integration, the core constraints are the same:
 
-What it provides:
-
-- A small helper crate (`macos-seatbelt-testing`) that:
-  - compiles `SandboxTestingBootstrap.c` via the `cc` build dependency,
-  - uses the macOS linker’s `-Wl,-force_load,<lib>` to ensure the constructor object is linked,
-  - links `-lsandbox` explicitly.
-
-Integration (recommended, no copy/paste):
-
-- Run the installer:
-
-```bash
-python3 <skill-path>/scripts/cargo_install.py --project-root <PATH_TO_CARGO_WORKSPACE>
-```
-
-- Verify:
-
-```bash
-python3 <skill-path>/scripts/cargo_verify.py --project-root <PATH_TO_CARGO_WORKSPACE>
-```
-
-Manual integration (for context / when you need more control):
-
-1. Copy the template crate into your repo, e.g. `tools/macos-seatbelt-testing/`.
-2. Add it as a dependency of your crates that produce **executables** and/or your **workspace test harness**.
-3. Ensure it is linked by referencing it (one line) from code.
-
-Minimal code usage pattern:
-
-```rust
-// In src/main.rs and/or src/lib.rs (for test harness linkage)
-#[cfg(target_os = "macos")]
-use macos_seatbelt_testing as _;
-```
-
-That single import is enough to ensure the crate is linked; the Seatbelt sandbox is applied by the C constructor.
-
-Operational knobs are the same environment variables described in `SKILL.md`:
-
-- `SEATBELT_SANDBOX_MODE=strict|redirect|report-only`
-- `SEATBELT_SANDBOX_NETWORK=deny|localhost|allow|allowlist`
-- `SEATBELT_SANDBOX_ALLOW_SYSTEM_TMP=0|1`
-- `SEATBELT_SANDBOX_DISABLE=1`
-
-### Go (recommended when cgo is acceptable)
-
-Template directory:
-
-- `assets/templates/go/`
-
-Installer workflow (no wrapper):
-
-```bash
-python3 <skill-path>/scripts/go_install.py --project-root <PATH_TO_GO_MODULE>
-python3 <skill-path>/scripts/go_verify.py --project-root <PATH_TO_GO_MODULE>
-```
-
-What the installer does:
-
-- Installs a cgo-enabled helper package under `tools/macos-seatbelt-testing-go/` that compiles and links `SandboxTestingBootstrap.c`.
-- Generates a per-package `_test.go` file that blank-imports the helper package so the bootstrap is linked into **every** `go test` binary.
-
-Caveats:
-
-- Requires `CGO_ENABLED=1` (default on macOS, but some repos intentionally disable it).
-- If your repo has complex build tags, the generated file may need adjustment.
-
-### Node / TypeScript (workable for `npm` scripts)
-
-Template directory:
-
-- `assets/templates/node-typescript/`
-
-Installer workflow:
-
-```bash
-python3 <skill-path>/scripts/node_install.py --project-root <PATH_TO_NODE_PROJECT>
-python3 <skill-path>/scripts/node_verify.py --project-root <PATH_TO_NODE_PROJECT>
-```
-
-What it provides:
-
-- A minimal N-API addon compiled with `node-gyp` that links `SandboxTestingBootstrap.c`.
-- A preload script (`sandbox/preload.js`) that loads the addon as early as possible.
-- A `package.json` script pattern that sets `NODE_OPTIONS=--require=./sandbox/preload.js` so **`npm test`** runs sandboxed.
-
-Caveats:
-
-- This is robust for scripted entrypoints (`npm test`, `npm run <script>`). It is not robust for arbitrary `node` invocations unless you also control those entrypoints.
-- If your tests need outbound networking (registry access, telemetry, etc.), set `SEATBELT_SANDBOX_NETWORK=allow` or `allowlist`.
-
-Alternative (often simpler): Node’s Permission Model
-
-If your goal is “prevent accidents during tests” rather than “kernel-enforced macOS sandboxing”, Node’s built-in Permission Model can be a good fit for many TypeScript repos.
-
-Tradeoffs:
-
-- It is not the same as Seatbelt (different enforcement model / scope).
-- It can be bypassed if you don’t control how Node is invoked.
-- It may not cover all early startup behavior.
-
-### Python (venv preload)
-
-If you run tests from a virtual environment (venv), you can apply the sandbox by loading a small dylib at interpreter startup.
-
-Template directory:
-
-- `assets/templates/python-venv/`
-
-Installer workflow:
-
-```bash
-python3 <skill-path>/scripts/python_install.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
-python3 <skill-path>/scripts/python_verify.py --project-root <PATH_TO_PY_PROJECT> --venv <PATH_TO_VENV>
-```
-
-This approach:
-
-- compiles `SandboxTestingBootstrap.c` into `macos_sandbox_testing_bootstrap.dylib`, and
-- installs a `.pth` startup hook into the venv’s `site-packages` so the dylib loads automatically.
-
-Limitations:
-
-- Applies automatically only when using the instrumented venv interpreter.
-- Can be bypassed by suppressing `site` initialization (`python -S`) or using a different interpreter.
+1. **Get the bootstrap translation unit linked** into the process that runs your tests/dev commands.
+2. Ensure it is not dead-stripped (use force-load flags or an “anchor” reference).
+3. Set `SEATBELT_SANDBOX_WORKSPACE_ROOT` explicitly if the toolchain’s working directory is not the repo root.
+4. Validate with `SEATBELT_SANDBOX_SELFTEST=1` and confirm:
+   - `<workspace>/.build/macos-sandbox-testing/<run-id>/logs/events.jsonl` exists
+   - it contains a `bootstrap` marker
 
 
 ## “sandbox-exec” wrappers are not the goal here
